@@ -1,0 +1,49 @@
+# ── Android ──
+/android/app/build/
+/android/build/
+/android/.gradle/
+/android/app/.cxx/
+/android/app/debug/
+/android/app/profile/
+/android/app/release/
+/android/local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# ── IDE ──
+*.iml
+.ipr
+.iws
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# ── Build artifacts ──
+/build/
+*.log
+*.pyc
+__pycache__/
+
+# ── Secrets and credentials — NEVER commit ──
+*.env
+.env
+*.keystore
+*.jks
+gcp-service-account.json
+service-account.json
+*access*keys*.csv
+argos_config.txt
+**/argos_config.txt
+
+# ── Large binaries ──
+*.bin
+*.tar.gz
+*.mp4
+
+# ── Temp files ──
+aria_*.txt
+imgui.ini
+*.tmp

@@ -1,0 +1,2244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+#canvas { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script src="three.min.js"></script>
+<script>
+(function() {
+'use strict';
+
+// ── Argos Robot — Modern Geometric Emoji Face ──
+// Pure black head, cyan square eyes, cyan mouth bar — modern flat design
+
+const canvas = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 0);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0, 3.2);
+camera.lookAt(0, 0, 0);
+
+// ── Lighting ──
+const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambient);
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.4);
+keyLight.position.set(1, 2, 3);
+scene.add(keyLight);
+
+const rimLight = new THREE.DirectionalLight(0x00cccc, 0.3);
+rimLight.position.set(-1, 1, -2);
+scene.add(rimLight);
+
+// ── Robot Group (pure head) ──
+const robot = new THREE.Group();
+scene.add(robot);
+
+// ── Materials ──
+// Modern MeshPhysicalMaterial for the spherical head — adds clearcoat for a
+// glossy robotic shell finish and metalness for a premium look. Based on
+// Three.js docs (MeshPhysicalMaterial) and modern robot design research.
+const headMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0a0a0f,
+    metalness: 0.4,
+    roughness: 0.35,
+    clearcoat: 0.6,
+    clearcoatRoughness: 0.2,
+    emissive: 0x050508,
+    emissiveIntensity: 0.5
+});
+const cyanMat = new THREE.MeshBasicMaterial({ color: 0x00e5cc });
+const cyanGlowMat = new THREE.MeshBasicMaterial({
+    color: 0x00e5cc, transparent: true, opacity: 0.3,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+
+// ── Head — black sphere (circular) ──
+// Radius 1.1 matches half the old box width (2.2) for a similar on-screen size.
+// A sphere gives the robot a clean circular silhouette from every angle.
+const headGeo = new THREE.SphereGeometry(1.1, 48, 48);
+const head = new THREE.Mesh(headGeo, headMat);
+robot.add(head);
+
+// Head edge glow (subtle cyan wireframe outline on the sphere)
+const edgeGeo = new THREE.WireframeGeometry(headGeo);
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x00e5cc, transparent: true, opacity: 0.15 });
+const edges = new THREE.LineSegments(edgeGeo, edgeMat);
+robot.add(edges);
+
+// ── Eyes — cyan squares ──
+// Reprojected onto the sphere surface: at (x=±0.55, y=0.15) the sphere
+// surface sits at z ≈ sqrt(1.1² − 0.55² − 0.15²) ≈ 0.94, so place eyes
+// at z=0.95 to sit just on the surface.
+const eyeGeo = new THREE.BoxGeometry(0.5, 0.5, 0.15);
+
+const leftEye = new THREE.Mesh(eyeGeo, cyanMat);
+leftEye.position.set(-0.55, 0.15, 0.95);
+robot.add(leftEye);
+
+const rightEye = new THREE.Mesh(eyeGeo, cyanMat);
+rightEye.position.set(0.55, 0.15, 0.95);
+robot.add(rightEye);
+
+// Eye glow planes (behind eyes for neon effect)
+const glowGeo = new THREE.PlaneGeometry(0.7, 0.7);
+const leftGlow = new THREE.Mesh(glowGeo, cyanGlowMat);
+leftGlow.position.set(-0.55, 0.15, 0.92);
+robot.add(leftGlow);
+
+const rightGlow = new THREE.Mesh(glowGeo, cyanGlowMat);
+rightGlow.position.set(0.55, 0.15, 0.92);
+robot.add(rightGlow);
+
+// ── Mouth — cyan horizontal bar ──
+// Reprojected onto sphere surface: at (x=0, y=−0.45) z ≈ sqrt(1.1² − 0.45²) ≈ 1.0
+const mouthGeo = new THREE.BoxGeometry(0.9, 0.12, 0.15);
+const mouth = new THREE.Mesh(mouthGeo, cyanMat);
+mouth.position.set(0, -0.45, 1.0);
+robot.add(mouth);
+
+// Mouth glow
+const mouthGlowGeo = new THREE.PlaneGeometry(1.1, 0.25);
+const mouthGlow = new THREE.Mesh(mouthGlowGeo, cyanGlowMat.clone());
+mouthGlow.position.set(0, -0.45, 0.97);
+robot.add(mouthGlow);
+
+// ── Hover glow ring (beneath head) ──
+const glowRingGeo = new THREE.RingGeometry(0.6, 1.4, 32);
+const glowRingMat = new THREE.MeshBasicMaterial({
+    color: 0x00e5cc, transparent: true, opacity: 0.1,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending
+});
+const glowRing = new THREE.Mesh(glowRingGeo, glowRingMat);
+glowRing.rotation.x = -Math.PI / 2;
+glowRing.position.y = -1.2;
+robot.add(glowRing);
+
+const glowRing2Geo = new THREE.RingGeometry(0.8, 1.8, 32);
+const glowRing2Mat = new THREE.MeshBasicMaterial({
+    color: 0x00b8aa, transparent: true, opacity: 0.05,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending
+});
+const glowRing2 = new THREE.Mesh(glowRing2Geo, glowRing2Mat);
+glowRing2.rotation.x = -Math.PI / 2;
+glowRing2.position.y = -1.25;
+robot.add(glowRing2);
+
+// ── Thinking dots ──
+const thinkingGroup = new THREE.Group();
+thinkingGroup.position.y = 1.2;
+thinkingGroup.visible = false;
+robot.add(thinkingGroup);
+
+// ── Back panel (visible when robot turns 180 to look at screen) ──
+// Circular disc on the back of the sphere — matches the new circular design.
+const backPanelGeo = new THREE.CircleGeometry(0.9, 48);
+const backPanelMat = new THREE.MeshPhongMaterial({
+    color: 0x12121a, shininess: 60, specular: 0x222233,
+    emissive: 0x080810, emissiveIntensity: 0.3,
+    side: THREE.DoubleSide
+});
+const backPanel = new THREE.Mesh(backPanelGeo, backPanelMat);
+backPanel.position.set(0, 0, -1.06);
+robot.add(backPanel);
+
+// Back panel edge glow (ring around the circular back panel)
+const backEdgeGeo = new THREE.RingGeometry(0.9, 0.95, 48);
+const backEdgeMat = new THREE.LineBasicMaterial({ color: 0x00e5cc, transparent: true, opacity: 0.3 });
+const backEdges = new THREE.Mesh(backEdgeGeo, backEdgeMat);
+backEdges.position.copy(backPanel.position);
+robot.add(backEdges);
+
+// Camera lens on back (looks like it's scanning the screen)
+const lensGeo = new THREE.CircleGeometry(0.25, 24);
+const lensMat = new THREE.MeshBasicMaterial({ color: 0x00e5cc, transparent: true, opacity: 0.8 });
+const lens = new THREE.Mesh(lensGeo, lensMat);
+lens.position.set(0, 0, -1.07);
+robot.add(lens);
+
+// Lens ring
+const lensRingGeo = new THREE.RingGeometry(0.25, 0.32, 24);
+const lensRingMat = new THREE.MeshBasicMaterial({ color: 0x00b8aa, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+const lensRing = new THREE.Mesh(lensRingGeo, lensRingMat);
+lensRing.position.set(0, 0, -1.08);
+robot.add(lensRing);
+
+// Antenna on top of the sphere
+const antennaGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.4, 8);
+const antennaMat = new THREE.MeshPhongMaterial({ color: 0x1a1a2e });
+const antenna = new THREE.Mesh(antennaGeo, antennaMat);
+antenna.position.set(0, 1.3, 0);
+robot.add(antenna);
+
+const antennaTipGeo = new THREE.SphereGeometry(0.08, 12, 12);
+const antennaTipMat = new THREE.MeshBasicMaterial({ color: 0x00e5cc });
+const antennaTip = new THREE.Mesh(antennaTipGeo, antennaTipMat);
+antennaTip.position.set(0, 1.52, 0);
+robot.add(antennaTip);
+
+// ── Floating Hands (neon blue, 3 fingers, no arms) ──
+// Hands are 1/4 the size of the head (head=2.2 wide, hand~0.55)
+// Positioned at the BOTTOM of the robot, not the top
+// Neon blue color — stands out against the cyan/teal robot body
+const NEON_BLUE = 0x00aaff;
+const handMat = new THREE.MeshPhongMaterial({
+    color: NEON_BLUE, transparent: true, opacity: 0.92,
+    shininess: 60, emissive: 0x002244, emissiveIntensity: 0.4
+});
+const handGlowMat = new THREE.MeshBasicMaterial({
+    color: NEON_BLUE, transparent: true, opacity: 0.25,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+
+// Palm — rounded using a slightly flattened sphere for a modern look
+const palmGeo = new THREE.SphereGeometry(0.28, 24, 16);
+// Finger phalanx — cylinder + sphere caps (capsule equivalent, since
+// CapsuleGeometry is not available in Three.js r128)
+const phalanxRadius = 0.06;
+const phalanxLength = 0.22;
+const phalanxCylGeo = new THREE.CylinderGeometry(phalanxRadius, phalanxRadius, phalanxLength, 12);
+const phalanxCapGeo = new THREE.SphereGeometry(phalanxRadius, 12, 10);
+// Thumb phalanx — shorter
+const thumbRadius = 0.055;
+const thumbLength = 0.16;
+const thumbCylGeo = new THREE.CylinderGeometry(thumbRadius, thumbRadius, thumbLength, 12);
+const thumbCapGeo = new THREE.SphereGeometry(thumbRadius, 12, 10);
+// Knuckle joint — small sphere at each joint for articulation detail
+const knuckleGeo = new THREE.SphereGeometry(0.07, 12, 12);
+
+// Helper: build a capsule-like mesh (cylinder with rounded sphere caps)
+// Returns a group oriented along +Y with the base at y=0.
+function createCapsuleMesh(cylGeo, capGeo, mat, totalLength) {
+    var group = new THREE.Group();
+    var cyl = new THREE.Mesh(cylGeo, mat);
+    cyl.position.set(0, totalLength / 2, 0);
+    group.add(cyl);
+    var capBottom = new THREE.Mesh(capGeo, mat);
+    capBottom.position.set(0, 0, 0);
+    group.add(capBottom);
+    var capTop = new THREE.Mesh(capGeo, mat);
+    capTop.position.set(0, totalLength, 0);
+    group.add(capTop);
+    return group;
+}
+
+// Build a single articulated finger with 2 phalanges (proximal + distal).
+// Returns the proximal joint group; rotating it curls the whole finger,
+// and rotating the distal child curls just the tip.
+function createFinger(baseX, baseY, length1, length2) {
+    // Proximal joint group (knuckle) — pivot at the palm attachment
+    var proximalGroup = new THREE.Group();
+    proximalGroup.position.set(baseX, baseY, 0);
+
+    // Proximal phalanx — capsule (cylinder + sphere caps)
+    var proximal = createCapsuleMesh(phalanxCylGeo, phalanxCapGeo, handMat, length1);
+    proximalGroup.add(proximal);
+
+    // Proximal glow
+    var proxGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.16, length1 + 0.08), handGlowMat);
+    proxGlow.position.set(0, length1 / 2, -0.06);
+    proximalGroup.add(proxGlow);
+
+    // Knuckle sphere at the base
+    var knuckle1 = new THREE.Mesh(knuckleGeo, handMat);
+    knuckle1.position.set(0, 0, 0);
+    proximalGroup.add(knuckle1);
+
+    // Distal joint group — child of proximal, positioned at the top
+    var distalGroup = new THREE.Group();
+    distalGroup.position.set(0, length1, 0);
+    proximalGroup.add(distalGroup);
+
+    // Distal phalanx — scaled capsule
+    var distal = createCapsuleMesh(phalanxCylGeo, phalanxCapGeo, handMat, length2);
+    distal.scale.setScalar(length2 / length1);
+    distalGroup.add(distal);
+
+    // Distal glow
+    var distGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.14, length2 + 0.06), handGlowMat);
+    distGlow.position.set(0, length2 / 2, -0.05);
+    distalGroup.add(distGlow);
+
+    // Fingertip — rounded sphere cap (already part of capsule, but add a
+    // slightly larger one for a pronounced fingertip)
+    var fingertip = new THREE.Mesh(new THREE.SphereGeometry(0.065, 12, 12), handMat);
+    fingertip.position.set(0, length2, 0);
+    distalGroup.add(fingertip);
+
+    // Store references for curl animation
+    proximalGroup.userData.distalGroup = distalGroup;
+    return proximalGroup;
+}
+
+function createHand() {
+    var handGroup = new THREE.Group();
+
+    // Palm — rounded sphere, slightly flattened
+    var palm = new THREE.Mesh(palmGeo, handMat);
+    palm.scale.set(1.0, 1.1, 0.55);
+    palm.position.set(0, 0, 0);
+    handGroup.add(palm);
+
+    // Palm glow
+    var palmGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.55), handGlowMat);
+    palmGlow.position.set(0, 0, -0.12);
+    handGroup.add(palmGlow);
+
+    // 4 fingers — anatomical spread across the top of the palm
+    // Proportions: index/middle longer, ring slightly shorter, pinky shortest
+    var fingerConfigs = [
+        { x: -0.20, l1: 0.24, l2: 0.20 }, // index
+        { x: -0.07, l1: 0.26, l2: 0.22 }, // middle (longest)
+        { x:  0.07, l1: 0.24, l2: 0.20 }, // ring
+        { x:  0.20, l1: 0.20, l2: 0.17 }, // pinky (shortest)
+    ];
+    var fingers = [];
+    for (var i = 0; i < fingerConfigs.length; i++) {
+        var cfg = fingerConfigs[i];
+        var finger = createFinger(cfg.x, 0.22, cfg.l1, cfg.l2);
+        handGroup.add(finger);
+        fingers.push(finger);
+    }
+    handGroup.userData.fingers = fingers;
+
+    // Thumb — 2 phalanges, positioned on the side at an angle
+    var thumbBase = new THREE.Group();
+    thumbBase.position.set(-0.28, -0.02, 0.05);
+    thumbBase.rotation.z = 0.9; // angled outward
+    handGroup.add(thumbBase);
+
+    var thumbProximal = createCapsuleMesh(thumbCylGeo, thumbCapGeo, handMat, thumbLength);
+    thumbBase.add(thumbProximal);
+
+    var thumbKnuckle = new THREE.Mesh(knuckleGeo, handMat);
+    thumbKnuckle.position.set(0, 0, 0);
+    thumbBase.add(thumbKnuckle);
+
+    var thumbDistalGroup = new THREE.Group();
+    thumbDistalGroup.position.set(0, 0.20, 0);
+    thumbBase.add(thumbDistalGroup);
+
+    var thumbDistal = createCapsuleMesh(thumbCylGeo, thumbCapGeo, handMat, thumbLength * 0.75);
+    thumbDistal.scale.setScalar(0.75);
+    thumbDistalGroup.add(thumbDistal);
+
+    var thumbTip = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 12), handMat);
+    thumbTip.position.set(0, 0.16, 0);
+    thumbDistalGroup.add(thumbTip);
+
+    handGroup.userData.thumb = { base: thumbBase, distal: thumbDistalGroup };
+
+    return handGroup;
+}
+
+// ── Hands group (separate from robot so hands always face camera) ──
+// Hands are NOT children of the robot group. Instead they live in a
+// separate group that copies the robot's position and scale but NOT its
+// rotation. This ensures the hands always appear in FRONT of the robot,
+// even when the robot spins or turns 180° to look at the screen.
+var handsGroup = new THREE.Group();
+scene.add(handsGroup);
+
+// Left hand — positioned at the BOTTOM-LEFT of the head, bigger scale (1/4 of head)
+var leftHand = createHand();
+leftHand.position.set(-0.85, -1.35, 0.9); // z=0.9 = in front of head face (z=0.8)
+leftHand.scale.setScalar(0.85);
+handsGroup.add(leftHand);
+
+// Right hand — positioned at the BOTTOM-RIGHT of the head, bigger scale (1/4 of head)
+var rightHand = createHand();
+rightHand.position.set(0.85, -1.35, 0.9); // z=0.9 = in front of head face
+rightHand.scale.setScalar(0.85);
+rightHand.scale.x = -0.85; // mirror
+handsGroup.add(rightHand);
+
+// Hand animation targets (z=0.9 = always in front of the head face)
+var leftHandTargetX = -0.85, leftHandTargetY = -1.35, leftHandTargetZ = 0.9;
+var leftHandTargetRotX = 0, leftHandTargetRotY = 0, leftHandTargetRotZ = 0;
+var rightHandTargetX = 0.85, rightHandTargetY = -1.35, rightHandTargetZ = 0.9;
+var rightHandTargetRotX = 0, rightHandTargetRotY = 0, rightHandTargetRotZ = 0;
+var handsVisible = false;
+
+// Finger curl state — per-finger curl amount (0=open, 1=clenched).
+// targetFingerCurl is set by applyHandGesture(); currentFingerCurl is
+// smoothly interpolated toward it in the animate loop for natural motion.
+// Order: [index, middle, ring, pinky]
+var targetFingerCurl = [0.15, 0.15, 0.15, 0.15];
+var currentFingerCurl = [0.15, 0.15, 0.15, 0.15];
+var targetThumbCurl = 0.1;
+var currentThumbCurl = 0.1;
+
+// ── Tear drops (for laughing — tears of joy) ──
+var tearGeo = new THREE.SphereGeometry(0.08, 12, 12);
+var tearMat = new THREE.MeshBasicMaterial({
+    color: 0x66ccff, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+
+var leftTear = new THREE.Mesh(tearGeo, tearMat.clone());
+leftTear.position.set(-0.55, 0.0, 0.9);
+robot.add(leftTear);
+
+var rightTear = new THREE.Mesh(tearGeo, tearMat.clone());
+rightTear.position.set(0.55, 0.0, 0.9);
+robot.add(rightTear);
+
+var tearTimer = 0;
+var tearPhase = 0; // 0=forming, 1=falling, 2=gone
+
+const dotGeo = new THREE.SphereGeometry(0.06, 12, 12);
+const dotMat = new THREE.MeshBasicMaterial({ color: 0x00e5cc, transparent: true });
+for (let i = 0; i < 3; i++) {
+    const dot = new THREE.Mesh(dotGeo, dotMat.clone());
+    dot.position.x = -0.2 + i * 0.2;
+    dot.material.opacity = 0.3;
+    thinkingGroup.add(dot);
+}
+
+// ── Particle sparkles ──
+const particleCount = 40;
+const particleGeo = new THREE.BufferGeometry();
+const particlePositions = new Float32Array(particleCount * 3);
+const particleVelocities = [];
+for (let i = 0; i < particleCount; i++) {
+    particlePositions[i * 3] = (Math.random() - 0.5) * 3;
+    particlePositions[i * 3 + 1] = (Math.random() - 0.5) * 2.5;
+    particlePositions[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+    particleVelocities.push({
+        x: (Math.random() - 0.5) * 0.008,
+        y: Math.random() * 0.015 + 0.003,
+        z: (Math.random() - 0.5) * 0.008,
+        life: Math.random()
+    });
+}
+particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+const particleMat = new THREE.PointsMaterial({
+    color: 0x00e5cc, size: 0.04, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+const particles = new THREE.Points(particleGeo, particleMat);
+robot.add(particles);
+
+// ── State Management ──
+const STATES = { IDLE: 'idle', WALKING: 'walking', GREETING: 'greeting', THINKING: 'thinking', TALKING: 'talking', SPINNING: 'spinning', SLEEPING: 'sleeping', LISTENING: 'listening', RECORDING: 'recording', DANCING: 'dancing' };
+const EXPRESSIONS = { NEUTRAL: 'neutral', HAPPY: 'happy', THINKING: 'thinking', TALKING: 'talking', SLEEPING: 'sleeping', SURPRISED: 'surprised', BLINK: 'blink', WINK: 'wink', LOVE: 'love', ANGRY: 'angry', SAD: 'sad', CONFUSED: 'confused', EXCITED: 'excited', DIZZY: 'dizzy', STAR_EYES: 'star_eyes', SCARED: 'scared', LAUGHING: 'laughing', HIDING_EYES: 'hiding_eyes' };
+
+// Blink/teleport state
+let isTeleporting = false;
+let teleportPhase = 0; // 0=fade_out, 1=fade_in
+let teleportTargetX = 0;
+let teleportTargetY = 0;
+let teleportAlpha = 1.0;
+let currentState = STATES.IDLE;
+let currentExpression = EXPRESSIONS.NEUTRAL;
+let stateTimer = 0;
+let stateDuration = 3;
+let animTime = 0;
+let facingRight = true;
+let walkTargetX = 0;
+let walkTargetY = 0;
+let currentScale = 1.0;
+let targetScale = 1.0;
+let zoomOverride = 0; // 0 = auto depth, >0 = manual zoom level
+let screenWidth = 1080;
+let screenHeight = 1920;
+let robotSize = 100;
+// Initialize to screen center so the robot doesn't flash at the top-left
+// corner before Java calls setPosition() in onPageFinished.
+let robotScreenX = screenWidth / 2;
+let robotScreenY = screenHeight * 0.35;
+let isDragging = false;
+let blinkTimer = 3;
+let isBlinking = false;
+let blinkDuration = 0;
+let spinTimer = 0;
+let spinDuration = 1.0;
+let walkSpeed = 150;
+let standbyMode = false;
+let keyboardVisible = false;
+let keyboardTopY = 0;
+
+// Dance system — triggered when user is actively using device
+let userActive = false;
+let danceBeatTimer = 0;
+let danceBeatInterval = 0.5; // seconds per beat (120 BPM default)
+let danceMoveIndex = 0;
+let danceBlinkTimer = 0;
+let lastActivityTime = 0;
+const ACTIVITY_TIMEOUT = 30; // seconds of inactivity before stopping dance
+
+// Turn animation state (180-degree turn to look at screen)
+let isTurning = false;
+let turnPhase = 0; // 0=turning to screen, 1=holding, 2=turning back
+let turnTimer = 0;
+let turnDuration = 0.6; // seconds for each half turn
+let turnHoldDuration = 1.5; // hold while "looking" at screen
+let turnTargetY = 0; // target rotation.y for turn
+
+// Sequential expression system
+let expressionSequence = []; // array of {expr, duration}
+let sequenceIndex = 0;
+let sequenceTimer = 0;
+let sequenceActive = false;
+
+// Expression targets for smooth interpolation
+let targetLeftEyeScaleX = 1, targetLeftEyeScaleY = 1;
+let targetRightEyeScaleX = 1, targetRightEyeScaleY = 1;
+let targetLeftEyePosY = 0.15, targetRightEyePosY = 0.15;
+let targetMouthScaleX = 1, targetMouthScaleY = 1, targetMouthPosY = -0.45;
+let targetMouthRotation = 0;
+let targetHeadTilt = 0, targetHeadTiltZ = 0;
+let targetGlowOpacity = 0.3;
+let targetEyeColor = new THREE.Color(0x00e5cc);
+let targetMouthColor = new THREE.Color(0x00e5cc);
+let currentEyeColor = new THREE.Color(0x00e5cc);
+let currentMouthColor = new THREE.Color(0x00e5cc);
+
+// ── JavaScript Interface (called from Java) ──
+window.ArgosJS = {
+    setState: function(state) {
+        currentState = state;
+        stateTimer = 0;
+        if (state === STATES.SPINNING) spinTimer = 0;
+        if (state === STATES.THINKING) thinkingGroup.visible = true;
+        else thinkingGroup.visible = false;
+        updateExpression();
+    },
+    setThinking: function(val) {
+        if (val) {
+            currentState = STATES.THINKING;
+            currentExpression = EXPRESSIONS.THINKING;
+            thinkingGroup.visible = true;
+        } else {
+            if (currentState === STATES.THINKING) {
+                currentState = STATES.IDLE;
+                stateDuration = 3;
+                currentExpression = EXPRESSIONS.NEUTRAL;
+                thinkingGroup.visible = false;
+            }
+        }
+        updateExpression();
+    },
+    setTalking: function(val) {
+        if (val) {
+            currentState = STATES.TALKING;
+            currentExpression = EXPRESSIONS.TALKING;
+        } else {
+            if (currentState === STATES.TALKING) {
+                currentState = STATES.IDLE;
+                stateDuration = 3;
+                currentExpression = EXPRESSIONS.NEUTRAL;
+            }
+        }
+        updateExpression();
+    },
+    setScreenSize: function(w, h) {
+        screenWidth = w;
+        screenHeight = h;
+    },
+    setPosition: function(x, y) {
+        robotScreenX = x;
+        robotScreenY = y;
+    },
+    setRobotSize: function(size) {
+        robotSize = size;
+    },
+    setDragging: function(val) {
+        isDragging = val;
+    },
+    // AI-controllable expression (case-insensitive — accepts HAPPY, happy, Happy, etc.)
+    setExpression: function(name) {
+        var upper = String(name || '').toUpperCase().trim();
+        if (EXPRESSIONS[upper]) {
+            currentExpression = EXPRESSIONS[upper];
+            sequenceActive = false; // cancel any running sequence
+            updateExpression();
+        } else {
+            // Fallback: try the raw value in case it's already a lowercase expression value
+            currentExpression = name;
+            sequenceActive = false;
+            updateExpression();
+        }
+    },
+    // AI-controllable hand gesture (case-insensitive)
+    // Overrides the expression's default hand position.
+    // The AI MUST include a [TOOL:HAND:gesture] tag with every response.
+    setHandGesture: function(name) {
+        var upper = String(name || '').toUpperCase().trim();
+        applyHandGesture(upper);
+    },
+    // AI-controllable movement
+    moveTo: function(x, y) {
+        walkToPosition(x, y);
+    },
+    // Get current position
+    getPosition: function() {
+        return JSON.stringify({ x: robotScreenX, y: robotScreenY, size: robotSize, scale: currentScale });
+    },
+    // AI-controllable zoom (1.0 = normal, 0.5 = far/small, 1.5 = close/big)
+    setZoom: function(zoom) {
+        zoomOverride = zoom;
+    },
+    // Reset to auto depth scaling
+    resetZoom: function() {
+        zoomOverride = 0;
+    },
+    // AI-controllable blink/teleport to position
+    blinkTo: function(x, y) {
+        if (!isTeleporting) {
+            isTeleporting = true;
+            teleportPhase = 0;
+            teleportTargetX = x;
+            teleportTargetY = y;
+        }
+    },
+    // Keyboard visibility — robot stays above keyboard at all times
+    setKeyboardVisible: function(visible, keyboardTop) {
+        keyboardVisible = visible;
+        keyboardTopY = keyboardTop;
+        if (visible) {
+            // Immediately move robot above keyboard
+            robotScreenY = keyboardTop - robotSize * 0.8;
+            if (window.JSBridge) JSBridge.onRobotPosition(robotScreenX, robotScreenY, robotSize * currentScale);
+        }
+    },
+    // Voice pipeline states
+    startListening: function() {
+        currentState = STATES.LISTENING;
+        currentExpression = EXPRESSIONS.EXCITED;
+        stateTimer = 0;
+        updateExpression();
+    },
+    stopListening: function() {
+        currentState = STATES.THINKING;
+        currentExpression = EXPRESSIONS.THINKING;
+        thinkingGroup.visible = true;
+        stateTimer = 0;
+        updateExpression();
+    },
+    startRecording: function() {
+        currentState = STATES.RECORDING;
+        currentExpression = EXPRESSIONS.EXCITED;
+        stateTimer = 0;
+        updateExpression();
+    },
+    stopRecording: function() {
+        currentState = STATES.THINKING;
+        currentExpression = EXPRESSIONS.THINKING;
+        thinkingGroup.visible = true;
+        stateTimer = 0;
+        // Reset glow ring colors to cyan
+        glowRing.material.color.setHex(0x00e5cc);
+        glowRing2.material.color.setHex(0x00b8a0);
+        robot.rotation.x = 0;
+        updateExpression();
+    },
+    getVersion: function() { return '5.3'; },
+    // Privacy mode — hands cover eyes when a blocked app is open
+    hideEyes: function() {
+        currentExpression = EXPRESSIONS.HIDING_EYES;
+        handsVisible = true;
+        updateExpression();
+    },
+    // Stop hiding eyes — return to normal
+    showEyes: function() {
+        if (currentExpression === EXPRESSIONS.HIDING_EYES) {
+            currentExpression = EXPRESSIONS.NEUTRAL;
+            handsVisible = false;
+            currentState = STATES.IDLE;
+            stateDuration = 3;
+            updateExpression();
+        }
+    },
+    setStandby: function(val) {
+        standbyMode = val;
+        if (val) {
+            // Stop any current walking, go to idle
+            currentState = STATES.IDLE;
+            currentExpression = EXPRESSIONS.SLEEPING;
+            stateDuration = 999;
+            userActive = false; // stop dancing in standby
+            updateExpression();
+        } else {
+            // Wake up
+            currentState = STATES.IDLE;
+            currentExpression = EXPRESSIONS.NEUTRAL;
+            stateDuration = 3;
+            updateExpression();
+        }
+    },
+    // Start dancing — called when user activity is detected
+    startDancing: function() {
+        if (standbyMode) return;
+        userActive = true;
+        lastActivityTime = animTime;
+        if (currentState !== STATES.DANCING && currentState !== STATES.THINKING &&
+            currentState !== STATES.TALKING && currentState !== STATES.LISTENING &&
+            currentState !== STATES.RECORDING && !isDragging) {
+            currentState = STATES.DANCING;
+            danceBeatTimer = 0;
+            danceMoveIndex = 0;
+            danceBlinkTimer = 0;
+            // Randomize tempo
+            danceBeatInterval = 0.35 + Math.random() * 0.25; // 100-170 BPM
+            currentExpression = EXPRESSIONS.EXCITED;
+            updateExpression();
+        }
+    },
+    // Stop dancing — return to idle
+    stopDancing: function() {
+        userActive = false;
+        if (currentState === STATES.DANCING) {
+            currentState = STATES.IDLE;
+            stateDuration = 3;
+            currentExpression = EXPRESSIONS.NEUTRAL;
+            updateExpression();
+        }
+    },
+    // Notify that user is active (app switch, touch, etc.)
+    onUserActivity: function() {
+        if (standbyMode) return;
+        lastActivityTime = animTime;
+        if (!userActive) {
+            startDancing();
+        }
+    },
+    // Turn 180 degrees to "look at" the screen (show back to user)
+    lookAtScreen: function() {
+        if (!isTurning) {
+            isTurning = true;
+            turnPhase = 0;
+            turnTimer = 0;
+            turnTargetY = Math.PI; // 180 degrees
+        }
+    },
+    // Play a sequence of expressions with durations
+    // sequenceJson format: [{"expr":"HAPPY","duration":1.5},{"expr":"SURPRISED","duration":1.0},...]
+    playExpressionSequence: function(sequenceJson) {
+        try {
+            var seq = JSON.parse(sequenceJson);
+            if (seq && seq.length > 0) {
+                expressionSequence = seq;
+                sequenceIndex = 0;
+                sequenceTimer = 0;
+                sequenceActive = true;
+                // Apply first expression immediately (case-insensitive)
+                if (seq[0].expr) {
+                    var upper = String(seq[0].expr).toUpperCase().trim();
+                    if (EXPRESSIONS[upper]) {
+                        currentExpression = EXPRESSIONS[upper];
+                        updateExpression();
+                    }
+                }
+            }
+        } catch(e) {
+            // ignore parse errors
+        }
+    },
+    // Stop any running expression sequence
+    stopSequence: function() {
+        sequenceActive = false;
+        expressionSequence = [];
+        sequenceIndex = 0;
+    }
+};
+
+// ── Hand Gesture System ──
+// The AI sends [TOOL:HAND:gesture] with every response to control hand poses.
+// Each gesture sets hand positions, rotations, and visibility.
+// If the gesture is NONE, hands hide. Otherwise hands are always visible.
+function applyHandGesture(gesture) {
+    // fingerCurl: 0 = fully open, 1 = fully clenched fist.
+    // Applied per-finger in the animate loop by rotating proximal + distal
+    // joint groups. Some gestures override individual fingers (e.g. POINT
+    // keeps index extended, PEACE keeps index + middle extended).
+    switch (gesture) {
+        case 'NONE':
+            handsVisible = false;
+            targetFingerCurl = [0, 0, 0, 0]; targetThumbCurl = 0;
+            break;
+        case 'WAVE':
+            // Both hands waving down low — friendly greeting, open hand
+            handsVisible = true;
+            leftHandTargetX = -1.2; leftHandTargetY = -1.0; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0.3; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.4;
+            rightHandTargetX = 1.2; rightHandTargetY = -1.0; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.4;
+            targetFingerCurl = [0, 0, 0, 0]; targetThumbCurl = 0;
+            break;
+        case 'POINT':
+            // Right hand pointing forward, left hand down
+            // Index extended, other fingers curled
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.9; rightHandTargetY = 0.0; rightHandTargetZ = 1.2;
+            rightHandTargetRotX = -0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = 0;
+            targetFingerCurl = [0, 0.9, 0.9, 0.9]; targetThumbCurl = 0.5;
+            break;
+        case 'FIST':
+            // Both hands clenched forward — determined/angry, all fingers curled
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.3; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.3; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.3; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.3; rightHandTargetRotZ = 0;
+            targetFingerCurl = [1, 1, 1, 1]; targetThumbCurl = 0.8;
+            break;
+        case 'OPEN':
+            // Both hands open palms forward — welcoming, all fingers extended
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.5; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = -0.2; leftHandTargetRotY = 0.3; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.5; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = -0.2; rightHandTargetRotY = -0.3; rightHandTargetRotZ = 0;
+            targetFingerCurl = [0, 0, 0, 0]; targetThumbCurl = 0;
+            break;
+        case 'HEART':
+            // Both hands form heart shape in front of chest, fingers curled
+            handsVisible = true;
+            leftHandTargetX = -0.4; leftHandTargetY = -0.2; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.6; leftHandTargetRotZ = 0.5;
+            rightHandTargetX = 0.4; rightHandTargetY = -0.2; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.6; rightHandTargetRotZ = -0.5;
+            targetFingerCurl = [0.7, 0.7, 0.7, 0.7]; targetThumbCurl = 0.7;
+            break;
+        case 'THUMBS_UP':
+            // Right hand thumbs up, left hand down
+            // Thumb extended, all fingers curled
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = 0.1; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = -0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = 0;
+            targetFingerCurl = [1, 1, 1, 1]; targetThumbCurl = 0;
+            break;
+        case 'PEACE':
+            // Right hand peace sign (V), left hand down
+            // Index + middle extended, ring + pinky curled
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.9; rightHandTargetY = 0.2; rightHandTargetZ = 1.1;
+            rightHandTargetRotX = -0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = 0.3;
+            targetFingerCurl = [0, 0, 0.9, 0.9]; targetThumbCurl = 0.5;
+            break;
+        case 'THINK':
+            // Right hand on chin — thinking pose, fingers relaxed
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.3; rightHandTargetY = 0.1; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = 0.2; rightHandTargetRotY = 0.5; rightHandTargetRotZ = 0.3;
+            targetFingerCurl = [0.3, 0.3, 0.3, 0.3]; targetThumbCurl = 0.2;
+            break;
+        case 'BELLY':
+            // Both hands on belly — laughing, content, fingers relaxed
+            handsVisible = true;
+            leftHandTargetX = -0.5; leftHandTargetY = -0.6; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0.3; leftHandTargetRotY = 0.4; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 0.5; rightHandTargetY = -0.6; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = -0.4; rightHandTargetRotZ = -0.2;
+            targetFingerCurl = [0.4, 0.4, 0.4, 0.4]; targetThumbCurl = 0.3;
+            break;
+        case 'CHEEKS':
+            // Both hands on cheeks — surprised, shock, fingers spread
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.2; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.2; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.5; rightHandTargetRotZ = 0;
+            targetFingerCurl = [0, 0, 0, 0]; targetThumbCurl = 0;
+            break;
+        case 'DOWN':
+            // Both hands hanging down low — sad, relaxed, fingers loose
+            handsVisible = true;
+            leftHandTargetX = -1.1; leftHandTargetY = -1.1; leftHandTargetZ = 0.5;
+            leftHandTargetRotX = 0.5; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 1.1; rightHandTargetY = -1.1; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.2;
+            targetFingerCurl = [0.2, 0.2, 0.2, 0.2]; targetThumbCurl = 0.1;
+            break;
+        case 'RAISED':
+            // Both hands raised up high — excited, celebrating, open hands
+            handsVisible = true;
+            leftHandTargetX = -1.1; leftHandTargetY = 0.5; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = -0.6; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.1; rightHandTargetY = 0.5; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = -0.6; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.3;
+            targetFingerCurl = [0, 0, 0, 0]; targetThumbCurl = 0;
+            break;
+        case 'CLAP':
+            // Both hands together in front — clapping, praising, fingers spread
+            handsVisible = true;
+            leftHandTargetX = -0.25; leftHandTargetY = -0.4; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.25; rightHandTargetY = -0.4; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.5; rightHandTargetRotZ = 0;
+            targetFingerCurl = [0, 0, 0, 0]; targetThumbCurl = 0;
+            break;
+        case 'SHRUG':
+            // Both hands out to sides, palms up — "I don't know", open
+            handsVisible = true;
+            leftHandTargetX = -1.3; leftHandTargetY = -0.1; leftHandTargetZ = 0.7;
+            leftHandTargetRotX = -0.3; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.3; rightHandTargetY = -0.1; rightHandTargetZ = 0.7;
+            rightHandTargetRotX = -0.3; rightHandTargetRotY = -0.5; rightHandTargetRotZ = -0.3;
+            targetFingerCurl = [0.1, 0.1, 0.1, 0.1]; targetThumbCurl = 0;
+            break;
+        case 'SCRATCH':
+            // Right hand scratching head — confused, fingers curled
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.5; rightHandTargetY = 0.8; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = 0.4;
+            targetFingerCurl = [0.6, 0.6, 0.6, 0.6]; targetThumbCurl = 0.4;
+            break;
+        case 'TREMBLE':
+            // Both hands trembling down low — scared, nervous, fingers curled
+            handsVisible = true;
+            leftHandTargetX = -1.2; leftHandTargetY = -0.8; leftHandTargetZ = 0.5;
+            leftHandTargetRotX = 0.5; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.2; rightHandTargetY = -0.8; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.3;
+            targetFingerCurl = [0.7, 0.7, 0.7, 0.7]; targetThumbCurl = 0.6;
+            break;
+        case 'REST':
+            // Default resting position — hands at bottom, fingers relaxed
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.85; rightHandTargetY = -1.35; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = 0; rightHandTargetRotZ = 0;
+            targetFingerCurl = [0.15, 0.15, 0.15, 0.15]; targetThumbCurl = 0.1;
+            break;
+        default:
+            // Unknown gesture — keep current hand state
+            break;
+    }
+}
+
+// ── Expression system ──
+function updateExpression() {
+    switch (currentExpression) {
+        case EXPRESSIONS.NEUTRAL:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 1;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 1; targetMouthScaleY = 1;
+            targetMouthPosY = -0.45; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.3;
+            targetEyeColor.setHex(0x00e5cc);
+            targetMouthColor.setHex(0x00e5cc);
+            break;
+
+        case EXPRESSIONS.HAPPY:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.6;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 0.6;
+            targetLeftEyePosY = 0.22; targetRightEyePosY = 0.22;
+            targetMouthScaleX = 1.3; targetMouthScaleY = 1;
+            targetMouthPosY = -0.42; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.4;
+            targetEyeColor.setHex(0x00ff99);
+            targetMouthColor.setHex(0x00ff99);
+            break;
+
+        case EXPRESSIONS.THINKING:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.5;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.18; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 0.7; targetMouthScaleY = 0.8;
+            targetMouthPosY = -0.48; targetMouthRotation = 0.1;
+            targetHeadTilt = 0.15; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.35;
+            targetEyeColor.setHex(0x9966ff);
+            targetMouthColor.setHex(0x9966ff);
+            break;
+
+        case EXPRESSIONS.TALKING:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 1;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 1.1; targetMouthScaleY = 1;
+            targetMouthPosY = -0.45; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.4;
+            targetEyeColor.setHex(0x00e5cc);
+            targetMouthColor.setHex(0x00ffcc);
+            break;
+
+        case EXPRESSIONS.SLEEPING:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.08;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 0.08;
+            targetLeftEyePosY = 0.1; targetRightEyePosY = 0.1;
+            targetMouthScaleX = 0.5; targetMouthScaleY = 0.6;
+            targetMouthPosY = -0.5; targetMouthRotation = 0;
+            targetHeadTilt = 0.2; targetHeadTiltZ = 0.1;
+            targetGlowOpacity = 0.15;
+            targetEyeColor.setHex(0x4466aa);
+            targetMouthColor.setHex(0x4466aa);
+            break;
+
+        case EXPRESSIONS.SURPRISED:
+            targetLeftEyeScaleX = 1.2; targetLeftEyeScaleY = 1.2;
+            targetRightEyeScaleX = 1.2; targetRightEyeScaleY = 1.2;
+            targetLeftEyePosY = 0.2; targetRightEyePosY = 0.2;
+            targetMouthScaleX = 1.2; targetMouthScaleY = 2.5;
+            targetMouthPosY = -0.4; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0xffee00);
+            targetMouthColor.setHex(0xffee00);
+            break;
+
+        case EXPRESSIONS.BLINK:
+            targetLeftEyeScaleY = 0.05;
+            targetRightEyeScaleY = 0.05;
+            break;
+
+        case EXPRESSIONS.WINK:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.05;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.18;
+            targetMouthScaleX = 1.2; targetMouthScaleY = 1;
+            targetMouthPosY = -0.42; targetMouthRotation = 0.05;
+            targetHeadTilt = 0; targetHeadTiltZ = -0.08;
+            targetGlowOpacity = 0.4;
+            targetEyeColor.setHex(0x00ff99);
+            targetMouthColor.setHex(0x00ff99);
+            break;
+
+        case EXPRESSIONS.LOVE:
+            targetLeftEyeScaleX = 1.3; targetLeftEyeScaleY = 1.3;
+            targetRightEyeScaleX = 1.3; targetRightEyeScaleY = 1.3;
+            targetLeftEyePosY = 0.25; targetRightEyePosY = 0.25;
+            targetMouthScaleX = 1.5; targetMouthScaleY = 1.3;
+            targetMouthPosY = -0.38; targetMouthRotation = 0;
+            targetHeadTilt = -0.05; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0xff44aa);
+            targetMouthColor.setHex(0xff66bb);
+            break;
+
+        case EXPRESSIONS.ANGRY:
+            targetLeftEyeScaleX = 1.1; targetLeftEyeScaleY = 0.7;
+            targetRightEyeScaleX = 1.1; targetRightEyeScaleY = 0.7;
+            targetLeftEyePosY = 0.08; targetRightEyePosY = 0.08;
+            targetMouthScaleX = 0.9; targetMouthScaleY = 0.7;
+            targetMouthPosY = -0.48; targetMouthRotation = -0.08;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.6;
+            targetEyeColor.setHex(0xff3333);
+            targetMouthColor.setHex(0xff3333);
+            break;
+
+        case EXPRESSIONS.SAD:
+            targetLeftEyeScaleX = 0.9; targetLeftEyeScaleY = 0.8;
+            targetRightEyeScaleX = 0.9; targetRightEyeScaleY = 0.8;
+            targetLeftEyePosY = 0.05; targetRightEyePosY = 0.05;
+            targetMouthScaleX = 0.6; targetMouthScaleY = 0.5;
+            targetMouthPosY = -0.5; targetMouthRotation = -0.05;
+            targetHeadTilt = 0.15; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.2;
+            targetEyeColor.setHex(0x6688cc);
+            targetMouthColor.setHex(0x6688cc);
+            break;
+
+        case EXPRESSIONS.CONFUSED:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 1;
+            targetRightEyeScaleX = 0.8; targetRightEyeScaleY = 0.6;
+            targetLeftEyePosY = 0.2; targetRightEyePosY = 0.1;
+            targetMouthScaleX = 0.8; targetMouthScaleY = 0.7;
+            targetMouthPosY = -0.46; targetMouthRotation = 0.08;
+            targetHeadTilt = 0; targetHeadTiltZ = 0.12;
+            targetGlowOpacity = 0.3;
+            targetEyeColor.setHex(0xffaa00);
+            targetMouthColor.setHex(0xffaa00);
+            break;
+
+        case EXPRESSIONS.EXCITED:
+            targetLeftEyeScaleX = 1.4; targetLeftEyeScaleY = 1.4;
+            targetRightEyeScaleX = 1.4; targetRightEyeScaleY = 1.4;
+            targetLeftEyePosY = 0.25; targetRightEyePosY = 0.25;
+            targetMouthScaleX = 1.4; targetMouthScaleY = 2.0;
+            targetMouthPosY = -0.38; targetMouthRotation = 0;
+            targetHeadTilt = -0.1; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0x00ffff);
+            targetMouthColor.setHex(0x00ffff);
+            break;
+
+        case EXPRESSIONS.DIZZY:
+            targetLeftEyeScaleX = 0.8; targetLeftEyeScaleY = 0.8;
+            targetRightEyeScaleX = 0.8; targetRightEyeScaleY = 0.8;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 0.6; targetMouthScaleY = 0.5;
+            targetMouthPosY = -0.48; targetMouthRotation = 0.05;
+            targetHeadTilt = 0.1; targetHeadTiltZ = -0.1;
+            targetGlowOpacity = 0.3;
+            targetEyeColor.setHex(0xff66ff);
+            targetMouthColor.setHex(0xff66ff);
+            break;
+
+        case EXPRESSIONS.STAR_EYES:
+            targetLeftEyeScaleX = 1.5; targetLeftEyeScaleY = 1.5;
+            targetRightEyeScaleX = 1.5; targetRightEyeScaleY = 1.5;
+            targetLeftEyePosY = 0.22; targetRightEyePosY = 0.22;
+            targetMouthScaleX = 1.6; targetMouthScaleY = 1.5;
+            targetMouthPosY = -0.36; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.6;
+            targetEyeColor.setHex(0xffdd00);
+            targetMouthColor.setHex(0x00ff99);
+            break;
+
+        case EXPRESSIONS.SCARED:
+            targetLeftEyeScaleX = 1.1; targetLeftEyeScaleY = 1.3;
+            targetRightEyeScaleX = 1.1; targetRightEyeScaleY = 1.3;
+            targetLeftEyePosY = 0.22; targetRightEyePosY = 0.22;
+            targetMouthScaleX = 0.5; targetMouthScaleY = 1.5;
+            targetMouthPosY = -0.42; targetMouthRotation = 0;
+            targetHeadTilt = -0.15; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0xffff00);
+            targetMouthColor.setHex(0xffff00);
+            break;
+
+        case EXPRESSIONS.HIDING_EYES:
+            // Eyes squinted (peeking through fingers)
+            targetLeftEyeScaleX = 0.8; targetLeftEyeScaleY = 0.15;
+            targetRightEyeScaleX = 0.8; targetRightEyeScaleY = 0.15;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            // Small "oops" mouth
+            targetMouthScaleX = 0.3; targetMouthScaleY = 0.3;
+            targetMouthPosY = -0.42; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.15;
+            targetEyeColor.setHex(0xff8800);
+            targetMouthColor.setHex(0xff8800);
+            // Hands cover eyes for privacy — override gesture
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.85; rightHandTargetY = -1.35; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = 0; rightHandTargetRotZ = 0;
+            break;
+
+        case EXPRESSIONS.LAUGHING:
+            // Squinted eyes (Duchenne smile), mouth will pulse in animation loop
+            targetLeftEyeScaleX = 1.2; targetLeftEyeScaleY = 0.12;
+            targetRightEyeScaleX = 1.2; targetRightEyeScaleY = 0.12;
+            targetLeftEyePosY = 0.25; targetRightEyePosY = 0.25;
+            // Mouth base — will be overridden by rhythmic pulse in animation loop
+            targetMouthScaleX = 1.5; targetMouthScaleY = 1.0;
+            targetMouthPosY = -0.38; targetMouthRotation = 0;
+            // Head tilted back — will bounce in animation loop
+            targetHeadTilt = -0.15; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.6;
+            targetEyeColor.setHex(0x00ff99);
+            targetMouthColor.setHex(0x00ff99);
+            break;
+    }
+}
+
+// ── Touch handling ──
+let touchStartX = 0, touchStartY = 0, touchDown = false;
+let longPressTimer = null;
+let longPressFired = false;
+
+canvas.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    const t = e.touches[0];
+    touchStartX = t.clientX;
+    touchStartY = t.clientY;
+    touchDown = true;
+    isDragging = false;
+    longPressFired = false;
+    if (window.JSBridge) JSBridge.onTouchDown(t.clientX, t.clientY);
+    // Notify user activity — keeps robot dancing
+    if (window.ArgosJS) ArgosJS.onUserActivity();
+    // Start long-press timer (600ms)
+    longPressTimer = setTimeout(function() {
+        if (!isDragging && touchDown) {
+            longPressFired = true;
+            if (window.JSBridge) JSBridge.onLongPress(t.clientX, t.clientY);
+        }
+    }, 600);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', function(e) {
+    e.preventDefault();
+    const t = e.touches[0];
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    if (Math.abs(dx) > 15 || Math.abs(dy) > 15) {
+        isDragging = true;
+        // Cancel long press if moved
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    }
+    if (window.JSBridge) JSBridge.onTouchMove(t.clientX, t.clientY, isDragging);
+}, { passive: false });
+
+canvas.addEventListener('touchend', function(e) {
+    e.preventDefault();
+    touchDown = false;
+    // Cancel long-press timer
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    // If long press already fired, don't process tap
+    if (longPressFired) return;
+
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (isDragging) {
+        isDragging = false;
+        if (window.JSBridge) JSBridge.onDragEnd();
+    } else if (dist < 30) {
+        // Any tap on head = head tap
+        const canvasRect = canvas.getBoundingClientRect();
+        const localX = t.clientX - canvasRect.left;
+        const localY = t.clientY - canvasRect.top;
+        const cx = canvasRect.width / 2;
+        const cy = canvasRect.height / 2;
+        const dxTap = localX - cx;
+        const dyTap = localY - cy;
+        const tapDist = Math.sqrt(dxTap * dxTap + dyTap * dyTap);
+        if (tapDist < canvasRect.width * 0.5) {
+            if (window.JSBridge) JSBridge.onHeadTap();
+        }
+    }
+}, { passive: false });
+
+// ── Animation helpers ──
+function pickNextBehavior() {
+    // In standby mode, don't auto-move — just idle with occasional expressions
+    if (standbyMode) {
+        currentState = STATES.IDLE;
+        stateDuration = 5 + Math.random() * 5;
+        if (Math.random() < 0.3) {
+            currentExpression = EXPRESSIONS.SLEEPING;
+        } else {
+            currentExpression = EXPRESSIONS.NEUTRAL;
+        }
+        updateExpression();
+        return;
+    }
+    // If user is active, favor dancing
+    if (userActive && (animTime - lastActivityTime) < ACTIVITY_TIMEOUT) {
+        if (currentState !== STATES.DANCING) {
+            currentState = STATES.DANCING;
+            danceBeatTimer = 0;
+            danceMoveIndex = 0;
+            currentExpression = EXPRESSIONS.EXCITED;
+            updateExpression();
+        }
+        return;
+    }
+    const roll = Math.random();
+    if (roll < 0.08) {
+        currentState = STATES.GREETING;
+        stateDuration = 1.5;
+        currentExpression = EXPRESSIONS.HAPPY;
+    } else if (roll < 0.55) {
+        // Walk to a random edge (edge-to-edge roaming)
+        walkRandomEdge();
+    } else if (roll < 0.70) {
+        // Spin then walk to a random edge
+        startSpinThenWalkRandomEdge();
+    } else {
+        currentState = STATES.IDLE;
+        stateDuration = 2 + Math.random() * 3;
+        currentExpression = EXPRESSIONS.NEUTRAL;
+    }
+    updateExpression();
+}
+
+function walkRandomEdge() {
+    // Pick the opposite edge from where the robot currently is, with a
+    // random vertical position — this gives edge-to-edge roaming.
+    const margin = robotSize * 1.5;
+    const onLeftSide = robotScreenX < screenWidth / 2;
+    walkTargetX = onLeftSide
+        ? screenWidth - margin            // head to the right edge
+        : margin;                         // head to the left edge
+    // Occasionally pick the same side but different Y
+    if (Math.random() < 0.2) {
+        walkTargetX = onLeftSide ? margin : screenWidth - margin;
+    }
+    // Random Y across the upper/middle portion of the screen
+    let maxY = screenHeight * 0.65;
+    if (keyboardVisible && keyboardTopY > 0) {
+        maxY = keyboardTopY - robotSize * 0.5;
+    }
+    walkTargetY = margin + Math.random() * (maxY - margin);
+    facingRight = walkTargetX > robotScreenX;
+    currentState = STATES.WALKING;
+    stateDuration = 999;
+}
+
+function startSpinThenWalkRandomEdge() {
+    spinTimer = 0;
+    const margin = robotSize * 1.5;
+    const onLeftSide = robotScreenX < screenWidth / 2;
+    walkTargetX = onLeftSide ? screenWidth - margin : margin;
+    let maxY = screenHeight * 0.65;
+    if (keyboardVisible && keyboardTopY > 0) {
+        maxY = keyboardTopY - robotSize * 0.5;
+    }
+    walkTargetY = margin + Math.random() * (maxY - margin);
+    facingRight = walkTargetX > robotScreenX;
+    currentState = STATES.SPINNING;
+    stateDuration = spinDuration;
+}
+
+function walkToEdge(left) {
+    const margin = robotSize * 1.5;
+    walkTargetX = left ? margin : screenWidth - margin;
+    walkTargetY = robotScreenY; // Keep same Y
+    facingRight = !left;
+    currentState = STATES.WALKING;
+    stateDuration = 999;
+}
+
+function walkToPosition(x, y) {
+    walkTargetX = x;
+    walkTargetY = y;
+    facingRight = x > robotScreenX;
+    currentState = STATES.WALKING;
+    stateDuration = 999;
+}
+
+function startSpinThenWalk(left) {
+    spinTimer = 0;
+    const margin = robotSize * 1.5;
+    walkTargetX = left ? margin : screenWidth - margin;
+    walkTargetY = robotScreenY;
+    facingRight = !left;
+    currentState = STATES.SPINNING;
+    stateDuration = spinDuration;
+}
+
+function startSpinThenWalkRandom() {
+    spinTimer = 0;
+    const margin = robotSize * 1.5;
+    walkTargetX = margin + Math.random() * (screenWidth - margin * 2);
+    walkTargetY = margin + Math.random() * (screenHeight * 0.6);
+    facingRight = walkTargetX > robotScreenX;
+    currentState = STATES.SPINNING;
+    stateDuration = spinDuration;
+}
+
+// ── Smooth interpolation helper ──
+function lerp(current, target, speed) {
+    return current + (target - current) * speed;
+}
+
+// ── Main animation loop ──
+let lastTime = performance.now();
+
+function animate() {
+    requestAnimationFrame(animate);
+    const now = performance.now();
+    let dt = (now - lastTime) / 1000;
+    lastTime = now;
+    if (dt > 0.1) dt = 0.016;
+    animTime += dt;
+    stateTimer += dt;
+
+    const lerpSpeed = 8 * dt;
+
+    // ── Idle bobbing ──
+    const bob = Math.sin(animTime * 1.8) * 0.06;
+    robot.position.y = bob;
+
+    // ── Blink logic ──
+    blinkTimer -= dt;
+    if (blinkTimer <= 0 && !isBlinking && currentExpression !== EXPRESSIONS.SLEEPING) {
+        isBlinking = true;
+        blinkDuration = 0.12;
+        blinkTimer = 2.5 + Math.random() * 4;
+        // Force blink
+        targetLeftEyeScaleY = 0.05;
+        targetRightEyeScaleY = 0.05;
+    }
+    if (isBlinking) {
+        blinkDuration -= dt;
+        if (blinkDuration <= 0) {
+            isBlinking = false;
+            updateExpression(); // Restore expression after blink
+        }
+    }
+
+    // ── 180-degree turn animation (look at screen) ──
+    if (isTurning) {
+        turnTimer += dt;
+        if (turnPhase === 0) {
+            // Turning to face screen (0 -> PI)
+            var t = Math.min(turnTimer / turnDuration, 1.0);
+            var eased = t * t * (3 - 2 * t); // smoothstep
+            robot.rotation.y = eased * Math.PI;
+            // Lens scanning effect
+            lens.material.opacity = 0.5 + Math.sin(animTime * 8) * 0.3;
+            lensRing.material.opacity = 0.3 + Math.sin(animTime * 6) * 0.2;
+            antennaTip.material.color.setHex(0x00ff99);
+            if (t >= 1.0) {
+                turnPhase = 1;
+                turnTimer = 0;
+            }
+        } else if (turnPhase === 1) {
+            // Holding — looking at screen
+            robot.rotation.y = Math.PI;
+            // Scanning lens pulse
+            lens.material.opacity = 0.6 + Math.sin(animTime * 10) * 0.3;
+            lensRing.material.opacity = 0.4 + Math.sin(animTime * 8) * 0.2;
+            // Antenna tip blinks
+            antennaTip.material.color.setHex(
+                Math.sin(animTime * 5) > 0 ? 0x00ff99 : 0x004433
+            );
+            if (turnTimer >= turnHoldDuration) {
+                turnPhase = 2;
+                turnTimer = 0;
+            }
+        } else if (turnPhase === 2) {
+            // Turning back to face user (PI -> 0)
+            var t2 = Math.min(turnTimer / turnDuration, 1.0);
+            var eased2 = t2 * t2 * (3 - 2 * t2);
+            robot.rotation.y = Math.PI * (1 - eased2);
+            lens.material.opacity = 0.8 * (1 - t2);
+            lensRing.material.opacity = 0.5 * (1 - t2);
+            if (t2 >= 1.0) {
+                isTurning = false;
+                turnPhase = 0;
+                robot.rotation.y = 0;
+                lens.material.opacity = 0.8;
+                lensRing.material.opacity = 0.5;
+                antennaTip.material.color.setHex(0x00e5cc);
+            }
+        }
+    }
+
+    // ── Sequential expression system ──
+    if (sequenceActive && expressionSequence.length > 0) {
+        sequenceTimer += dt;
+        var currentStep = expressionSequence[sequenceIndex];
+        if (currentStep && sequenceTimer >= (currentStep.duration || 1.0)) {
+            sequenceIndex++;
+            sequenceTimer = 0;
+            if (sequenceIndex >= expressionSequence.length) {
+                // Sequence complete
+                sequenceActive = false;
+                currentExpression = EXPRESSIONS.NEUTRAL;
+                updateExpression();
+            } else {
+                // Apply next expression (case-insensitive)
+                var next = expressionSequence[sequenceIndex];
+                if (next.expr) {
+                    var upper = String(next.expr).toUpperCase().trim();
+                    if (EXPRESSIONS[upper]) {
+                        currentExpression = EXPRESSIONS[upper];
+                        updateExpression();
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Smooth eye interpolation ──
+    leftEye.scale.x = lerp(leftEye.scale.x, targetLeftEyeScaleX, lerpSpeed);
+    leftEye.scale.y = lerp(leftEye.scale.y, targetLeftEyeScaleY, lerpSpeed);
+    leftEye.position.y = lerp(leftEye.position.y, targetLeftEyePosY, lerpSpeed);
+    rightEye.scale.x = lerp(rightEye.scale.x, targetRightEyeScaleX, lerpSpeed);
+    rightEye.scale.y = lerp(rightEye.scale.y, targetRightEyeScaleY, lerpSpeed);
+    rightEye.position.y = lerp(rightEye.position.y, targetRightEyePosY, lerpSpeed);
+
+    // ── Smooth mouth interpolation ──
+    mouth.scale.x = lerp(mouth.scale.x, targetMouthScaleX, lerpSpeed);
+    mouth.scale.y = lerp(mouth.scale.y, targetMouthScaleY, lerpSpeed);
+    mouth.position.y = lerp(mouth.position.y, targetMouthPosY, lerpSpeed);
+    mouth.rotation.z = lerp(mouth.rotation.z, targetMouthRotation, lerpSpeed);
+
+    // ── Smooth head tilt ──
+    robot.rotation.x = lerp(robot.rotation.x, targetHeadTilt, lerpSpeed);
+    robot.rotation.z = lerp(robot.rotation.z, targetHeadTiltZ, lerpSpeed);
+
+    // ── Floating hands interpolation ──
+    var handLerpSpeed = 6 * dt;
+    leftHand.position.x = lerp(leftHand.position.x, leftHandTargetX, handLerpSpeed);
+    leftHand.position.y = lerp(leftHand.position.y, leftHandTargetY, handLerpSpeed);
+    leftHand.position.z = lerp(leftHand.position.z, leftHandTargetZ, handLerpSpeed);
+    leftHand.rotation.x = lerp(leftHand.rotation.x, leftHandTargetRotX, handLerpSpeed);
+    leftHand.rotation.y = lerp(leftHand.rotation.y, leftHandTargetRotY, handLerpSpeed);
+    leftHand.rotation.z = lerp(leftHand.rotation.z, leftHandTargetRotZ, handLerpSpeed);
+
+    rightHand.position.x = lerp(rightHand.position.x, rightHandTargetX, handLerpSpeed);
+    rightHand.position.y = lerp(rightHand.position.y, rightHandTargetY, handLerpSpeed);
+    rightHand.position.z = lerp(rightHand.position.z, rightHandTargetZ, handLerpSpeed);
+    rightHand.rotation.x = lerp(rightHand.rotation.x, rightHandTargetRotX, handLerpSpeed);
+    rightHand.rotation.y = lerp(rightHand.rotation.y, rightHandTargetRotY, handLerpSpeed);
+    rightHand.rotation.z = lerp(rightHand.rotation.z, rightHandTargetRotZ, handLerpSpeed);
+
+    // ── Sync hands group with robot position/scale (but NOT rotation) ──
+    // This ensures hands always face the camera and appear in front of the
+    // robot, even when the robot spins or turns 180° to look at the screen.
+    handsGroup.position.copy(robot.position);
+    handsGroup.scale.copy(robot.scale);
+
+    // Hand visibility — fade in/out
+    var handTargetOpacity = handsVisible ? 0.9 : 0.0;
+    var handGlowTarget = handsVisible ? 0.25 : 0.0;
+    handMat.opacity = lerp(handMat.opacity, handTargetOpacity, handLerpSpeed);
+    handGlowMat.opacity = lerp(handGlowMat.opacity, handGlowTarget, handLerpSpeed);
+
+    // ── Finger curl interpolation ──
+    // Smoothly interpolate each finger's curl toward its target, then apply
+    // the curl as rotation on the proximal and distal joint groups.
+    // Proximal rotates ~70% of full curl, distal rotates ~90% — matching
+    // anatomical DIP/PIP joint ratios for natural-looking finger bending.
+    var curlLerp = 8 * dt;
+    for (var fi = 0; fi < 4; fi++) {
+        currentFingerCurl[fi] = lerp(currentFingerCurl[fi], targetFingerCurl[fi], curlLerp);
+    }
+    currentThumbCurl = lerp(currentThumbCurl, targetThumbCurl, curlLerp);
+
+    // Apply curl to both hands (left + right have identical finger structure)
+    var hands = [leftHand, rightHand];
+    for (var hi = 0; hi < 2; hi++) {
+        var hand = hands[hi];
+        var fingers = hand.userData.fingers;
+        if (fingers) {
+            for (var fi = 0; fi < fingers.length; fi++) {
+                var curl = currentFingerCurl[fi];
+                // Proximal joint — curls forward (negative X rotation = forward)
+                fingers[fi].rotation.x = -curl * 1.4;
+                // Distal joint — curls a bit more for a natural curve
+                var distal = fingers[fi].userData.distalGroup;
+                if (distal) distal.rotation.x = -curl * 1.8;
+            }
+        }
+        // Thumb curl
+        var thumb = hand.userData.thumb;
+        if (thumb) {
+            thumb.base.rotation.x = -currentThumbCurl * 1.0;
+            thumb.distal.rotation.x = -currentThumbCurl * 1.4;
+        }
+    }
+
+    // Hand-specific idle motions based on expression
+    if (handsVisible) {
+        if (currentExpression === EXPRESSIONS.LAUGHING) {
+            // Laugh rhythm — ~5Hz pulse (research: laughter pulses 4-6 Hz)
+            var laughFreq = 5.0;
+            var laughPulse = Math.sin(animTime * laughFreq * Math.PI * 2);
+            var laughAbs = Math.abs(laughPulse); // 0->1->0 per cycle
+
+            // Mouth opens and closes rhythmically — main element of laugh
+            mouth.scale.y = 1.0 + laughAbs * 1.8; // closed -> wide open
+            mouth.scale.x = 1.5 + laughAbs * 0.3;
+            mouth.position.y = -0.38 + laughAbs * 0.05; // shifts up when open
+
+            // Eyes move up when mouth opens, down when it closes (synced)
+            leftEye.position.y = 0.25 + laughAbs * 0.06;
+            rightEye.position.y = 0.25 + laughAbs * 0.06;
+            // Eyes squint tighter on each laugh pulse
+            leftEye.scale.y = 0.12 + (1 - laughAbs) * 0.08;
+            rightEye.scale.y = 0.12 + (1 - laughAbs) * 0.08;
+
+            // Head bounces back and forth — tilts further back on each pulse
+            robot.rotation.x = -0.15 - laughAbs * 0.12;
+            // Slight forward nod between pulses
+            robot.position.y = bob + laughAbs * 0.08;
+
+            // Body shake — subtle z-axis vibration
+            robot.rotation.z = Math.sin(animTime * laughFreq * Math.PI) * 0.03;
+
+            // Hands bounce in sync with mouth — belly-hold pushing in on each laugh
+            leftHand.position.y = leftHandTargetY + laughAbs * 0.06;
+            rightHand.position.y = rightHandTargetY + laughAbs * 0.06;
+            leftHand.rotation.z = leftHandTargetRotZ + laughAbs * 0.08;
+            rightHand.rotation.z = rightHandTargetRotZ - laughAbs * 0.08;
+            // Hands push toward belly on each pulse
+            leftHand.position.z = leftHandTargetZ + laughAbs * 0.05;
+            rightHand.position.z = rightHandTargetZ + laughAbs * 0.05;
+        } else if (currentExpression === EXPRESSIONS.HAPPY) {
+            // Waving — alternate up/down
+            leftHand.position.y = leftHandTargetY + Math.sin(animTime * 4) * 0.12;
+            rightHand.position.y = rightHandTargetY + Math.sin(animTime * 4 + Math.PI) * 0.12;
+        } else if (currentExpression === EXPRESSIONS.EXCITED) {
+            // Cheering — fast up/down both hands
+            leftHand.position.y = leftHandTargetY + Math.sin(animTime * 7) * 0.1;
+            rightHand.position.y = rightHandTargetY + Math.sin(animTime * 7) * 0.1;
+        } else if (currentExpression === EXPRESSIONS.ANGRY) {
+            // Shaking fists
+            leftHand.position.x = leftHandTargetX + Math.sin(animTime * 10) * 0.04;
+            rightHand.position.x = rightHandTargetX - Math.sin(animTime * 10) * 0.04;
+        } else if (currentExpression === EXPRESSIONS.SCARED) {
+            // Trembling hands
+            leftHand.position.x = leftHandTargetX + Math.sin(animTime * 15) * 0.03;
+            rightHand.position.x = rightHandTargetX - Math.sin(animTime * 15) * 0.03;
+            leftHand.position.y = leftHandTargetY + Math.cos(animTime * 12) * 0.03;
+            rightHand.position.y = rightHandTargetY + Math.cos(animTime * 12) * 0.03;
+        } else if (currentExpression === EXPRESSIONS.HIDING_EYES) {
+            // Hands covering eyes — slight breathing/tremble, hands pressed against face
+            leftHand.position.x = leftHandTargetX + Math.sin(animTime * 2) * 0.01;
+            rightHand.position.x = rightHandTargetX - Math.sin(animTime * 2) * 0.01;
+            leftHand.position.y = leftHandTargetY + Math.sin(animTime * 1.5) * 0.015;
+            rightHand.position.y = rightHandTargetY + Math.sin(animTime * 1.5) * 0.015;
+            // Slight head shake "no no no"
+            robot.rotation.z = Math.sin(animTime * 3) * 0.03;
+        } else if (currentExpression === EXPRESSIONS.SAD) {
+            // Slow sway
+            leftHand.rotation.z = leftHandTargetRotZ + Math.sin(animTime * 1.5) * 0.06;
+            rightHand.rotation.z = rightHandTargetRotZ - Math.sin(animTime * 1.5) * 0.06;
+        } else if (currentExpression === EXPRESSIONS.LOVE) {
+            // Gentle pulse toward head
+            leftHand.position.z = leftHandTargetZ + Math.sin(animTime * 3) * 0.05;
+            rightHand.position.z = rightHandTargetZ + Math.sin(animTime * 3) * 0.05;
+        } else if (currentExpression === EXPRESSIONS.THINKING) {
+            // Hand on chin — slight tap/stroke
+            leftHand.position.y = leftHandTargetY + Math.sin(animTime * 2) * 0.03;
+            leftHand.rotation.z = leftHandTargetRotZ + Math.sin(animTime * 1.5) * 0.05;
+        } else if (currentExpression === EXPRESSIONS.WINK) {
+            // Playful hand — slight wave near face
+            leftHand.position.y = leftHandTargetY + Math.sin(animTime * 3) * 0.05;
+            leftHand.rotation.z = leftHandTargetRotZ + Math.sin(animTime * 2) * 0.08;
+        } else if (currentExpression === EXPRESSIONS.CONFUSED) {
+            // Hand on head — scratch motion
+            leftHand.position.x = leftHandTargetX + Math.sin(animTime * 4) * 0.03;
+            leftHand.rotation.z = leftHandTargetRotZ + Math.sin(animTime * 3) * 0.06;
+            rightHand.position.y = rightHandTargetY + Math.sin(animTime * 2) * 0.04;
+        } else if (currentExpression === EXPRESSIONS.DIZZY) {
+            // Both hands on head — wobble
+            leftHand.position.x = leftHandTargetX + Math.sin(animTime * 3) * 0.04;
+            rightHand.position.x = rightHandTargetX - Math.sin(animTime * 3) * 0.04;
+            leftHand.rotation.z = leftHandTargetRotZ + Math.sin(animTime * 2) * 0.06;
+            rightHand.rotation.z = rightHandTargetRotZ - Math.sin(animTime * 2) * 0.06;
+        } else if (currentExpression === EXPRESSIONS.STAR_EYES) {
+            // Hands raised — subtle trembling with awe
+            leftHand.position.y = leftHandTargetY + Math.sin(animTime * 3) * 0.04;
+            rightHand.position.y = rightHandTargetY + Math.sin(animTime * 3) * 0.04;
+        } else if (currentExpression === EXPRESSIONS.SURPRISED) {
+            // Hands on cheeks — slight shake
+            leftHand.position.x = leftHandTargetX + Math.sin(animTime * 8) * 0.02;
+            rightHand.position.x = rightHandTargetX - Math.sin(animTime * 8) * 0.02;
+        }
+    }
+
+    // ── Laughing tear animation (tears of joy) ──
+    if (currentExpression === EXPRESSIONS.LAUGHING) {
+        tearTimer += dt;
+        if (tearPhase === 0) {
+            // Forming — tear appears at eye corner, grows
+            var formT = Math.min(tearTimer / 0.5, 1.0);
+            leftTear.material.opacity = formT * 0.8;
+            rightTear.material.opacity = formT * 0.8;
+            leftTear.position.set(-0.55, 0.0 - formT * 0.05, 0.9);
+            rightTear.position.set(0.55, 0.0 - formT * 0.05, 0.9);
+            leftTear.scale.setScalar(0.5 + formT * 0.8);
+            rightTear.scale.setScalar(0.5 + formT * 0.8);
+            if (tearTimer >= 0.5) {
+                tearPhase = 1;
+                tearTimer = 0;
+            }
+        } else if (tearPhase === 1) {
+            // Falling — tear drops down with gravity
+            var fallT = tearTimer / 1.0;
+            leftTear.position.y = -0.05 - fallT * 1.2;
+            rightTear.position.y = -0.05 - fallT * 1.2;
+            leftTear.material.opacity = 0.8 * (1 - fallT * 0.7);
+            rightTear.material.opacity = 0.8 * (1 - fallT * 0.7);
+            leftTear.scale.setScalar(1.3 - fallT * 0.3);
+            rightTear.scale.setScalar(1.3 - fallT * 0.3);
+            if (tearTimer >= 1.0) {
+                tearPhase = 2;
+                tearTimer = 0;
+            }
+        } else if (tearPhase === 2) {
+            // Gone — brief pause then restart
+            leftTear.material.opacity = 0;
+            rightTear.material.opacity = 0;
+            if (tearTimer >= 0.3) {
+                tearPhase = 0;
+                tearTimer = 0;
+            }
+        }
+    } else {
+        // Fade out tears when not laughing
+        leftTear.material.opacity = lerp(leftTear.material.opacity, 0, lerpSpeed);
+        rightTear.material.opacity = lerp(rightTear.material.opacity, 0, lerpSpeed);
+        tearPhase = 0;
+        tearTimer = 0;
+    }
+
+    // ── Glow opacity ──
+    leftGlow.material.opacity = lerp(leftGlow.material.opacity, targetGlowOpacity, lerpSpeed);
+    rightGlow.material.opacity = lerp(rightGlow.material.opacity, targetGlowOpacity, lerpSpeed);
+    mouthGlow.material.opacity = lerp(mouthGlow.material.opacity, targetGlowOpacity * 0.6, lerpSpeed);
+
+    // ── Eye and mouth color interpolation ──
+    currentEyeColor.lerp(targetEyeColor, lerpSpeed);
+    currentMouthColor.lerp(targetMouthColor, lerpSpeed);
+    leftEye.material.color.copy(currentEyeColor);
+    rightEye.material.color.copy(currentEyeColor);
+    mouth.material.color.copy(currentMouthColor);
+    leftGlow.material.color.copy(currentEyeColor);
+    rightGlow.material.color.copy(currentEyeColor);
+    mouthGlow.material.color.copy(currentMouthColor);
+
+    // ── State animations ──
+    switch (currentState) {
+        case STATES.IDLE:
+            // Gentle sway
+            robot.rotation.y = Math.sin(animTime * 1.2) * 0.05;
+            break;
+
+        case STATES.GREETING:
+            // Happy bounce
+            robot.position.y = bob + Math.abs(Math.sin(animTime * 4)) * 0.08;
+            robot.rotation.y = Math.sin(animTime * 2) * 0.08;
+            break;
+
+        case STATES.WALKING:
+            if (!isDragging) {
+                // Slight tilt while moving
+                robot.rotation.z = facingRight ? 0.03 : -0.03;
+                robot.rotation.y = facingRight ? 0.1 : -0.1;
+                // Bouncing
+                robot.position.y = bob + Math.abs(Math.sin(animTime * 6)) * 0.05;
+            }
+            break;
+
+        case STATES.THINKING:
+            // Thinking dots animation
+            const dotPhase = Math.floor(animTime * 3) % 3;
+            thinkingGroup.children.forEach((dot, i) => {
+                dot.material.opacity = (i === dotPhase) ? 1.0 : 0.3;
+                dot.position.y = (i === dotPhase) ? 0.06 : 0;
+            });
+            // Floating particles
+            particleMat.opacity = 0.5;
+            // Eyes scan side to side (thinking look)
+            leftEye.position.x = -0.55 + Math.sin(animTime * 1.5) * 0.04;
+            rightEye.position.x = 0.55 + Math.sin(animTime * 1.5) * 0.04;
+            // Occasional thinking blink (one eye)
+            if (Math.sin(animTime * 0.7) > 0.7) {
+                leftEye.scale.y = lerp(leftEye.scale.y, 0.3, lerpSpeed);
+            }
+            // Slow head sway
+            robot.rotation.y = Math.sin(animTime * 0.8) * 0.06;
+            break;
+
+        case STATES.TALKING:
+            // Mouth talking animation — varied syllable-like shapes
+            const talkPhase = Math.sin(animTime * 12);
+            const talkPhase2 = Math.sin(animTime * 7 + 1.5);
+            mouth.scale.y = 1 + Math.abs(talkPhase) * 1.8 + Math.abs(talkPhase2) * 0.5;
+            mouth.scale.x = 1 + Math.sin(animTime * 5) * 0.15 + Math.abs(talkPhase2) * 0.1;
+            // Eyes look slightly side to side while talking
+            leftEye.position.x = -0.55 + Math.sin(animTime * 2) * 0.03;
+            rightEye.position.x = 0.55 + Math.sin(animTime * 2) * 0.03;
+            // Slight head bob
+            robot.position.y = bob + Math.sin(animTime * 6) * 0.03;
+            // Floating particles
+            particleMat.opacity = 0.4;
+            break;
+
+        case STATES.SPINNING:
+            spinTimer += dt;
+            // Spin the head
+            robot.rotation.y = spinTimer * Math.PI * 4;
+            if (spinTimer >= spinDuration) {
+                currentState = STATES.WALKING;
+                stateDuration = 999;
+                robot.rotation.y = 0;
+            }
+            break;
+
+        case STATES.SLEEPING:
+            // Slow breathing bob
+            robot.position.y = Math.sin(animTime * 1.2) * 0.04;
+            // Slow sway
+            robot.rotation.y = Math.sin(animTime * 0.5) * 0.03;
+            break;
+
+        case STATES.LISTENING:
+            // Ears perk up — glow pulses rapidly
+            glowRing.material.opacity = 0.15 + Math.sin(animTime * 8) * 0.1;
+            glowRing.scale.setScalar(1.1 + Math.sin(animTime * 6) * 0.15);
+            glowRing2.material.opacity = 0.08 + Math.sin(animTime * 7) * 0.05;
+            // Head tilts slightly toward sound (user)
+            robot.rotation.y = Math.sin(animTime * 2) * 0.08;
+            // Gentle bob — attentive
+            robot.position.y = bob + Math.sin(animTime * 3) * 0.04;
+            // Eyes glow brighter
+            targetGlowOpacity = 0.6;
+            break;
+
+        case STATES.RECORDING:
+            // Red pulsing glow — recording indicator
+            glowRing.material.color.setHex(0xff3333);
+            glowRing.material.opacity = 0.2 + Math.sin(animTime * 6) * 0.15;
+            glowRing.scale.setScalar(1.15 + Math.sin(animTime * 4) * 0.2);
+            glowRing2.material.color.setHex(0xff3333);
+            glowRing2.material.opacity = 0.1 + Math.sin(animTime * 5) * 0.08;
+            // Steady attentive bob
+            robot.position.y = bob + Math.sin(animTime * 4) * 0.03;
+            // Slight forward lean
+            robot.rotation.x = 0.06;
+            // Eyes pulse with recording rhythm
+            const recPulse = Math.sin(animTime * 5);
+            leftEye.scale.x = 1 + recPulse * 0.08;
+            rightEye.scale.x = 1 + recPulse * 0.08;
+            // Mouth subtle wave (listening)
+            mouth.scale.y = 1 + Math.sin(animTime * 3) * 0.15;
+            // Override eye color to red while recording
+            currentEyeColor.lerp(new THREE.Color(0xff4444), lerpSpeed);
+            leftEye.material.color.copy(currentEyeColor);
+            rightEye.material.color.copy(currentEyeColor);
+            leftGlow.material.color.copy(currentEyeColor);
+            rightGlow.material.color.copy(currentEyeColor);
+            targetGlowOpacity = 0.8;
+            break;
+
+        case STATES.DANCING:
+            // Beat-following dance — rhythmic bounces, spins, blinks, and color shifts
+            danceBeatTimer += dt;
+            danceBlinkTimer += dt;
+
+            // Beat hit — every danceBeatInterval seconds
+            if (danceBeatTimer >= danceBeatInterval) {
+                danceBeatTimer = 0;
+                danceMoveIndex = (danceMoveIndex + 1) % 6;
+            }
+
+            // Beat progress 0-1 within current beat
+            var beatProgress = danceBeatTimer / danceBeatInterval;
+            var beatPulse = Math.sin(beatProgress * Math.PI); // 0->1->0 per beat
+
+            // Dance moves cycle through 6 patterns
+            switch (danceMoveIndex) {
+                case 0: // Bounce up and down
+                    robot.position.y = bob + beatPulse * 0.25;
+                    robot.rotation.y = Math.sin(animTime * 3) * 0.1;
+                    robot.rotation.z = 0;
+                    break;
+                case 1: // Side-to-side sway
+                    robot.position.y = bob + beatPulse * 0.12;
+                    robot.rotation.y = Math.sin(animTime * 4) * 0.15;
+                    robot.rotation.z = Math.sin(animTime * 2) * 0.08;
+                    break;
+                case 2: // Head spin (quarter turns on beat)
+                    robot.position.y = bob + beatPulse * 0.15;
+                    robot.rotation.y = beatPulse * Math.PI * 0.5 * (Math.floor(animTime) % 2 ? 1 : -1);
+                    robot.rotation.z = 0;
+                    break;
+                case 3: // Lean back and forth
+                    robot.position.y = bob + Math.abs(beatPulse) * 0.18;
+                    robot.rotation.x = beatPulse * 0.15;
+                    robot.rotation.y = Math.sin(animTime * 2) * 0.06;
+                    robot.rotation.z = 0;
+                    break;
+                case 4: // Wiggle — fast z rotation
+                    robot.position.y = bob + beatPulse * 0.1;
+                    robot.rotation.z = Math.sin(animTime * 8) * 0.12;
+                    robot.rotation.y = Math.sin(animTime * 5) * 0.08;
+                    break;
+                case 5: // Big bounce with spin
+                    robot.position.y = bob + Math.abs(beatPulse) * 0.3;
+                    robot.rotation.y = beatProgress * Math.PI * 2;
+                    robot.rotation.z = Math.sin(animTime * 6) * 0.05;
+                    break;
+            }
+
+            // Rhythmic eye pulse on beat
+            var eyePulse = 1 + beatPulse * 0.3;
+            leftEye.scale.x = eyePulse;
+            rightEye.scale.x = eyePulse;
+            leftEye.scale.y = eyePulse;
+            rightEye.scale.y = eyePulse;
+
+            // Rhythmic blinking — blink on every other beat
+            if (danceBlinkTimer >= danceBeatInterval * 2) {
+                danceBlinkTimer = 0;
+                targetLeftEyeScaleY = 0.05;
+                targetRightEyeScaleY = 0.05;
+                isBlinking = true;
+                blinkDuration = 0.1;
+            }
+
+            // Mouth moves with the beat
+            mouth.scale.y = 1 + beatPulse * 1.5;
+            mouth.scale.x = 1 + beatPulse * 0.3;
+
+            // Cycle through neon colors on each beat
+            var danceColors = [0x00e5ff, 0x00ff99, 0xff00ff, 0xffdd00, 0xff6644, 0x66aaff];
+            var colorIdx = Math.floor(animTime / danceBeatInterval) % danceColors.length;
+            targetEyeColor.setHex(danceColors[colorIdx]);
+            targetMouthColor.setHex(danceColors[colorIdx]);
+
+            // Glow rings pulse with beat
+            glowRing.material.opacity = 0.15 + beatPulse * 0.2;
+            glowRing.scale.setScalar(1 + beatPulse * 0.3);
+            glowRing2.material.opacity = 0.08 + beatPulse * 0.1;
+            glowRing2.scale.setScalar(1 + beatPulse * 0.2);
+
+            // Particles sparkle during dance
+            particleMat.opacity = 0.3 + beatPulse * 0.3;
+            targetGlowOpacity = 0.4 + beatPulse * 0.3;
+
+            // Check activity timeout — stop dancing if user inactive
+            if (animTime - lastActivityTime > ACTIVITY_TIMEOUT) {
+                stopDancing();
+            }
+            break;
+    }
+
+    // ── Glow ring pulse ──
+    glowRing.scale.setScalar(1 + Math.sin(animTime * 2.5) * 0.12);
+    glowRing.material.opacity = 0.08 + Math.sin(animTime * 2.5) * 0.04;
+    glowRing2.scale.setScalar(1 + Math.sin(animTime * 2.5 + 1) * 0.08);
+    glowRing2.material.opacity = 0.04 + Math.sin(animTime * 2.5 + 1) * 0.02;
+
+    // ── Edge glow pulse ──
+    edges.material.opacity = 0.3 + Math.sin(animTime * 2) * 0.1;
+
+    // ── Particle update ──
+    if (currentState === STATES.THINKING || currentState === STATES.TALKING) {
+        const positions = particleGeo.attributes.position.array;
+        for (let i = 0; i < particleCount; i++) {
+            const v = particleVelocities[i];
+            positions[i * 3] += v.x;
+            positions[i * 3 + 1] += v.y;
+            positions[i * 3 + 2] += v.z;
+            v.life -= dt * 0.5;
+            if (v.life <= 0) {
+                positions[i * 3] = (Math.random() - 0.5) * 3;
+                positions[i * 3 + 1] = -1.0;
+                positions[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+                v.life = 1;
+                v.y = Math.random() * 0.015 + 0.003;
+            }
+        }
+        particleGeo.attributes.position.needsUpdate = true;
+    } else {
+        particleMat.opacity = Math.max(0, particleMat.opacity - dt * 2);
+    }
+
+    // ── Auto behavior transitions ──
+    if (currentState !== STATES.WALKING && currentState !== STATES.SPINNING &&
+        currentState !== STATES.THINKING && currentState !== STATES.TALKING &&
+        currentState !== STATES.LISTENING && currentState !== STATES.RECORDING &&
+        stateTimer >= stateDuration) {
+        if (currentState === STATES.GREETING) {
+            currentState = STATES.IDLE;
+            stateDuration = 3 + Math.random() * 5;
+            currentExpression = EXPRESSIONS.NEUTRAL;
+            updateExpression();
+        } else {
+            pickNextBehavior();
+        }
+    }
+
+    // ── Walking movement (2D — any direction) ──
+    if (currentState === STATES.WALKING && !isDragging) {
+        const dx = walkTargetX - robotScreenX;
+        const dy = walkTargetY - robotScreenY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 4) {
+            robotScreenX = walkTargetX;
+            robotScreenY = walkTargetY;
+            currentState = STATES.IDLE;
+            stateDuration = 3 + Math.random() * 4;
+        } else {
+            const step = walkSpeed * dt;
+            if (dist < step) {
+                robotScreenX = walkTargetX;
+                robotScreenY = walkTargetY;
+            } else {
+                robotScreenX += (dx / dist) * step;
+                robotScreenY += (dy / dist) * step;
+                facingRight = dx > 0;
+            }
+        }
+        // Clamp Y to stay above keyboard
+        if (keyboardVisible && keyboardTopY > 0) {
+            const maxY = keyboardTopY - robotSize * 0.5;
+            if (robotScreenY > maxY) robotScreenY = maxY;
+        }
+    }
+
+    // ── Teleport/Blink animation ──
+    if (isTeleporting) {
+        if (teleportPhase === 0) {
+            // Fade out
+            teleportAlpha -= dt * 6;
+            robot.traverse(function(child) {
+                if (child.material) {
+                    child.material.transparent = true;
+                    child.material.opacity = Math.max(0, teleportAlpha * 0.3);
+                }
+            });
+            handsGroup.traverse(function(child) {
+                if (child.material) {
+                    child.material.transparent = true;
+                    child.material.opacity = Math.max(0, teleportAlpha * 0.3);
+                }
+            });
+            if (teleportAlpha <= 0) {
+                teleportAlpha = 0;
+                teleportPhase = 1;
+                // Instant move to target
+                robotScreenX = teleportTargetX;
+                robotScreenY = teleportTargetY;
+                // Clamp Y to stay above keyboard
+                if (keyboardVisible && keyboardTopY > 0) {
+                    const maxY = keyboardTopY - robotSize * 0.5;
+                    if (robotScreenY > maxY) robotScreenY = maxY;
+                }
+                facingRight = teleportTargetX > robotScreenX;
+            }
+        } else {
+            // Fade in
+            teleportAlpha += dt * 6;
+            robot.traverse(function(child) {
+                if (child.material) {
+                    child.material.transparent = true;
+                    child.material.opacity = Math.min(1, teleportAlpha * 0.3);
+                }
+            });
+            handsGroup.traverse(function(child) {
+                if (child.material) {
+                    child.material.transparent = true;
+                    child.material.opacity = Math.min(1, teleportAlpha * 0.3);
+                }
+            });
+            if (teleportAlpha >= 1) {
+                teleportAlpha = 1;
+                isTeleporting = false;
+                // Restore full opacity
+                robot.traverse(function(child) {
+                    if (child.material) child.material.opacity = 0.3;
+                });
+                currentState = STATES.IDLE;
+                stateDuration = 2 + Math.random() * 3;
+            }
+        }
+        // Skip normal movement while teleporting
+        renderer.render(scene, camera);
+        return;
+    }
+
+    // ── 3D Depth Scaling (always active, smooth) ──
+    // Auto depth: based on Y position — smaller at top (far), bigger at bottom (close)
+    // Manual zoom: AI can override with setZoom()
+    let autoDepthScale = 0.4 + (robotScreenY / screenHeight) * 1.0; // 0.4 at top, 1.4 at bottom
+    if (zoomOverride > 0) {
+        targetScale = zoomOverride;
+    } else {
+        targetScale = autoDepthScale;
+    }
+    currentScale = lerp(currentScale, targetScale, 3 * dt);
+    robot.scale.setScalar(currentScale);
+    // Notify Java of position with effective size
+    const effectiveSize = robotSize * currentScale;
+    if (window.JSBridge) JSBridge.onRobotPosition(robotScreenX, robotScreenY, effectiveSize);
+
+    renderer.render(scene, camera);
+}
+
+// ── Resize handler ──
+window.addEventListener('resize', function() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ── Start ──
+animate();
+
+// Start walking after a brief delay — head to a random edge
+setTimeout(function() {
+    if (currentState === STATES.IDLE) walkRandomEdge();
+}, 2000);
+
+})();
+</script>
+
+<!-- ── MediaPipe Hand Tracking (Web-based) ── -->
+<!-- Uses MediaPipe Tasks Vision JS (WASM) to detect hand landmarks via webcam.
+     Pinch gesture (thumb + index) grabs the robot, move hand to drag, release to drop.
+     Runs entirely in the WebView — no native camera overlay needed. -->
+<script type="module">
+import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs";
+
+(function() {
+'use strict';
+
+let handLandmarker = null;
+let videoEl = null;
+let handTrackingActive = false;
+let handTrackingLoop = null;
+let isPinching = false;
+let smoothedX = 0.5;
+let smoothedY = 0.5;
+const SMOOTHING = 0.5;
+const PINCH_GRAB = 0.07;
+const PINCH_RELEASE = 0.12;
+
+// Expose start/stop controls to Java via ArgosJS
+window.ArgosHandTracking = {
+    start: async function() {
+        if (handTrackingActive) return;
+        try {
+            // Load MediaPipe WASM
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm"
+            );
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1,
+                minHandDetectionConfidence: 0.4,
+                minHandPresenceConfidence: 0.4,
+                minTrackingConfidence: 0.4
+            });
+
+            // Create hidden video element for camera
+            videoEl = document.createElement('video');
+            videoEl.style.cssText = 'position:fixed;bottom:10px;right:10px;width:120px;height:160px;z-index:9999;opacity:0.3;border:2px solid #00ff88;border-radius:8px;mirror:true;';
+            videoEl.autoplay = true;
+            videoEl.playsinline = true;
+            videoEl.muted = true;
+            document.body.appendChild(videoEl);
+
+            // Get camera stream (front camera)
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: 'user',
+                    width: { ideal: 640 },
+                    height: { ideal: 480 }
+                },
+                audio: false
+            });
+            videoEl.srcObject = stream;
+            await videoEl.play();
+
+            handTrackingActive = true;
+            if (window.JSBridge) JSBridge.onHandTrackingStatus('active');
+
+            // Start detection loop
+            let lastVideoTime = -1;
+            function detectLoop() {
+                if (!handTrackingActive || !handLandmarker || !videoEl) return;
+                if (videoEl.currentTime !== lastVideoTime) {
+                    lastVideoTime = videoEl.currentTime;
+                    const result = handLandmarker.detectForVideo(videoEl, performance.now());
+                    processHandResult(result);
+                }
+                handTrackingLoop = requestAnimationFrame(detectLoop);
+            }
+            detectLoop();
+        } catch (e) {
+            console.error('Hand tracking start error:', e);
+            if (window.JSBridge) JSBridge.onHandTrackingStatus('error');
+        }
+    },
+
+    stop: function() {
+        handTrackingActive = false;
+        if (handTrackingLoop) {
+            cancelAnimationFrame(handTrackingLoop);
+            handTrackingLoop = null;
+        }
+        if (videoEl && videoEl.srcObject) {
+            videoEl.srcObject.getTracks().forEach(t => t.stop());
+            videoEl.srcObject = null;
+        }
+        if (videoEl && videoEl.parentNode) {
+            videoEl.parentNode.removeChild(videoEl);
+        }
+        if (handLandmarker) {
+            handLandmarker.close();
+            handLandmarker = null;
+        }
+        isPinching = false;
+        if (window.JSBridge) JSBridge.onHandTrackingStatus('stopped');
+    },
+
+    toggle: function() {
+        if (handTrackingActive) this.stop();
+        else this.start();
+    },
+
+    isActive: function() {
+        return handTrackingActive;
+    }
+};
+
+function processHandResult(result) {
+    if (!result || !result.landmarks || result.landmarks.length === 0) {
+        // No hand detected
+        if (isPinching) {
+            isPinching = false;
+            if (window.JSBridge) JSBridge.onHandRelease(smoothedX, smoothedY);
+        }
+        return;
+    }
+
+    const landmarks = result.landmarks[0];
+    if (landmarks.length < 9) return;
+
+    // Landmark 4 = thumb tip, 8 = index finger tip
+    const thumb = landmarks[4];
+    const index = landmarks[8];
+
+    // Pinch distance (normalized 0-1)
+    const dx = thumb.x - index.x;
+    const dy = thumb.y - index.y;
+    const pinchDist = Math.sqrt(dx * dx + dy * dy);
+
+    // Hand position = midpoint of thumb and index
+    // Front camera is mirrored, so flip X
+    let rawX = 1.0 - ((thumb.x + index.x) / 2.0);
+    let rawY = (thumb.y + index.y) / 2.0;
+    rawX = Math.max(0, Math.min(1, rawX));
+    rawY = Math.max(0, Math.min(1, rawY));
+
+    // Smooth
+    smoothedX = smoothedX + (rawX - smoothedX) * SMOOTHING;
+    smoothedY = smoothedY + (rawY - smoothedY) * SMOOTHING;
+
+    // Gesture detection with hysteresis
+    if (!isPinching && pinchDist < PINCH_GRAB) {
+        isPinching = true;
+        if (window.JSBridge) JSBridge.onHandGrab(smoothedX, smoothedY);
+    } else if (isPinching && pinchDist > PINCH_RELEASE) {
+        isPinching = false;
+        if (window.JSBridge) JSBridge.onHandRelease(smoothedX, smoothedY);
+    } else if (isPinching) {
+        if (window.JSBridge) JSBridge.onHandDrag(smoothedX, smoothedY);
+    }
+}
+
+})();
+</script>
+</body>
+</html>
