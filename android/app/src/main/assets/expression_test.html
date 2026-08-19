@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #111; }
+#canvas { width: 100%; height: 100%; display: block; }
+#ui {
+    position: fixed; top: 10px; left: 10px; z-index: 100;
+    font-family: monospace; color: #00e5cc; font-size: 14px;
+    background: rgba(0,0,0,0.7); padding: 12px; border-radius: 8px;
+    border: 1px solid #00e5cc44; max-width: 320px;
+}
+#currentExpr { font-size: 20px; font-weight: bold; color: #00ff99; margin: 8px 0; }
+#controls { margin-top: 10px; }
+button {
+    background: #00e5cc22; color: #00e5cc; border: 1px solid #00e5cc;
+    padding: 6px 12px; margin: 2px; border-radius: 4px; cursor: pointer;
+    font-family: monospace; font-size: 12px;
+}
+button:hover { background: #00e5cc44; }
+button.active { background: #00e5cc; color: #000; }
+#log { margin-top: 8px; font-size: 11px; color: #888; max-height: 120px; overflow-y: auto; }
+.pass { color: #00ff99; } .fail { color: #ff4444; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="ui">
+    <div>Argos Expression Test</div>
+    <div id="currentExpr">NEUTRAL</div>
+    <div id="controls"></div>
+    <div id="log"></div>
+</div>
+<script src="three.min.js"></script>
+<script>
+(function() {
+'use strict';
+
+// ── Same robot setup as argos_robot.html ──
+const canvas = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x111111, 1);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0, 3.2);
+camera.lookAt(0, 0, 0);
+
+const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambient);
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.4);
+keyLight.position.set(1, 2, 3);
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0x00cccc, 0.3);
+rimLight.position.set(-1, 1, -2);
+scene.add(rimLight);
+
+const robot = new THREE.Group();
+scene.add(robot);
+
+const headMat = new THREE.MeshPhongMaterial({
+    color: 0x0a0a0f, shininess: 80, specular: 0x333344,
+    emissive: 0x050508, emissiveIntensity: 0.5
+});
+const cyanMat = new THREE.MeshBasicMaterial({ color: 0x00e5cc });
+const cyanGlowMat = new THREE.MeshBasicMaterial({
+    color: 0x00e5cc, transparent: true, opacity: 0.3,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+
+const headGeo = new THREE.BoxGeometry(2.2, 1.8, 1.6);
+const head = new THREE.Mesh(headGeo, headMat);
+robot.add(head);
+
+const edgeGeo = new THREE.EdgesGeometry(headGeo);
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x00e5cc, transparent: true, opacity: 0.4 });
+const edges = new THREE.LineSegments(edgeGeo, edgeMat);
+robot.add(edges);
+
+const eyeGeo = new THREE.BoxGeometry(0.5, 0.5, 0.15);
+const leftEye = new THREE.Mesh(eyeGeo, cyanMat);
+leftEye.position.set(-0.55, 0.15, 0.85);
+robot.add(leftEye);
+const rightEye = new THREE.Mesh(eyeGeo, cyanMat);
+rightEye.position.set(0.55, 0.15, 0.85);
+robot.add(rightEye);
+
+const glowGeo = new THREE.PlaneGeometry(0.7, 0.7);
+const leftGlow = new THREE.Mesh(glowGeo, cyanGlowMat);
+leftGlow.position.set(-0.55, 0.15, 0.82);
+robot.add(leftGlow);
+const rightGlow = new THREE.Mesh(glowGeo, cyanGlowMat);
+rightGlow.position.set(0.55, 0.15, 0.82);
+robot.add(rightGlow);
+
+const mouthGeo = new THREE.BoxGeometry(0.9, 0.12, 0.15);
+const mouth = new THREE.Mesh(mouthGeo, cyanMat);
+mouth.position.set(0, -0.45, 0.85);
+robot.add(mouth);
+const mouthGlowGeo = new THREE.PlaneGeometry(1.1, 0.25);
+const mouthGlow = new THREE.Mesh(mouthGlowGeo, cyanGlowMat.clone());
+mouthGlow.position.set(0, -0.45, 0.82);
+robot.add(mouthGlow);
+
+// ── Neon Blue Hands (separate group — always in front) ──
+const NEON_BLUE = 0x00aaff;
+const handMat = new THREE.MeshBasicMaterial({ color: NEON_BLUE, transparent: true, opacity: 0.9 });
+const handGlowMat = new THREE.MeshBasicMaterial({
+    color: NEON_BLUE, transparent: true, opacity: 0.25,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+
+const palmGeo = new THREE.BoxGeometry(0.55, 0.55, 0.25);
+const fingerGeo = new THREE.BoxGeometry(0.14, 0.45, 0.14);
+
+function createHand() {
+    var handGroup = new THREE.Group();
+    var palm = new THREE.Mesh(palmGeo, handMat);
+    handGroup.add(palm);
+    var palmGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.72), handGlowMat);
+    palmGlow.position.set(0, 0, -0.14);
+    handGroup.add(palmGlow);
+    var fingerPositions = [-0.18, 0, 0.18];
+    for (var i = 0; i < 3; i++) {
+        var finger = new THREE.Mesh(fingerGeo, handMat);
+        finger.position.set(fingerPositions[i], 0.45, 0);
+        handGroup.add(finger);
+        var fGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.55), handGlowMat);
+        fGlow.position.set(fingerPositions[i], 0.45, -0.1);
+        handGroup.add(fGlow);
+    }
+    var thumbGeo = new THREE.BoxGeometry(0.14, 0.35, 0.14);
+    var thumb = new THREE.Mesh(thumbGeo, handMat);
+    thumb.position.set(-0.32, 0.12, 0);
+    thumb.rotation.z = 0.5;
+    handGroup.add(thumb);
+    return handGroup;
+}
+
+var handsGroup = new THREE.Group();
+scene.add(handsGroup);
+
+var leftHand = createHand();
+leftHand.position.set(-0.85, -1.35, 0.9);
+leftHand.scale.setScalar(0.85);
+handsGroup.add(leftHand);
+
+var rightHand = createHand();
+rightHand.position.set(0.85, -1.35, 0.9);
+rightHand.scale.setScalar(0.85);
+rightHand.scale.x = -0.85;
+handsGroup.add(rightHand);
+
+var leftHandTargetX = -0.85, leftHandTargetY = -1.35, leftHandTargetZ = 0.9;
+var leftHandTargetRotX = 0, leftHandTargetRotY = 0, leftHandTargetRotZ = 0;
+var rightHandTargetX = 0.85, rightHandTargetY = -1.35, rightHandTargetZ = 0.9;
+var rightHandTargetRotX = 0, rightHandTargetRotY = 0, rightHandTargetRotZ = 0;
+var handsVisible = false;
+
+// ── Expression system (same as argos_robot.html) ──
+const EXPRESSIONS = {
+    NEUTRAL: 'neutral', HAPPY: 'happy', THINKING: 'thinking', TALKING: 'talking',
+    SLEEPING: 'sleeping', SURPRISED: 'surprised', BLINK: 'blink', WINK: 'wink',
+    LOVE: 'love', ANGRY: 'angry', SAD: 'sad', CONFUSED: 'confused',
+    EXCITED: 'excited', DIZZY: 'dizzy', STAR_EYES: 'star_eyes', SCARED: 'scared',
+    LAUGHING: 'laughing', HIDING_EYES: 'hiding_eyes'
+};
+
+let currentExpression = EXPRESSIONS.NEUTRAL;
+let animTime = 0;
+let targetLeftEyeScaleX = 1, targetLeftEyeScaleY = 1;
+let targetRightEyeScaleX = 1, targetRightEyeScaleY = 1;
+let targetLeftEyePosY = 0.15, targetRightEyePosY = 0.15;
+let targetMouthScaleX = 1, targetMouthScaleY = 1, targetMouthPosY = -0.45;
+let targetMouthRotation = 0;
+let targetHeadTilt = 0, targetHeadTiltZ = 0;
+let targetGlowOpacity = 0.3;
+let targetEyeColor = new THREE.Color(0x00e5cc);
+let targetMouthColor = new THREE.Color(0x00e5cc);
+let currentEyeColor = new THREE.Color(0x00e5cc);
+let currentMouthColor = new THREE.Color(0x00e5cc);
+
+function updateExpression() {
+    switch (currentExpression) {
+        case EXPRESSIONS.NEUTRAL:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 1;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 1; targetMouthScaleY = 1;
+            targetMouthPosY = -0.45; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.3;
+            targetEyeColor.setHex(0x00e5cc); targetMouthColor.setHex(0x00e5cc);
+            handsVisible = false; break;
+        case EXPRESSIONS.HAPPY:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.6;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 0.6;
+            targetLeftEyePosY = 0.22; targetRightEyePosY = 0.22;
+            targetMouthScaleX = 1.3; targetMouthScaleY = 1;
+            targetMouthPosY = -0.42; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0; targetGlowOpacity = 0.4;
+            targetEyeColor.setHex(0x00ff99); targetMouthColor.setHex(0x00ff99);
+            handsVisible = true;
+            leftHandTargetX = -1.2; leftHandTargetY = -1.0; leftHandTargetZ = 0.4;
+            leftHandTargetRotX = 0.3; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.4;
+            rightHandTargetX = 1.2; rightHandTargetY = -1.0; rightHandTargetZ = 0.4;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.4; break;
+        case EXPRESSIONS.THINKING:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.5;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.18; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 0.7; targetMouthScaleY = 0.8;
+            targetMouthPosY = -0.48; targetMouthRotation = 0.1;
+            targetHeadTilt = 0.15; targetHeadTiltZ = 0; targetGlowOpacity = 0.35;
+            targetEyeColor.setHex(0x9966ff); targetMouthColor.setHex(0x9966ff);
+            handsVisible = true;
+            leftHandTargetX = -0.5; leftHandTargetY = -0.3; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = 0.2; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.1; rightHandTargetY = -0.1; rightHandTargetZ = 0.3;
+            rightHandTargetRotX = 0; rightHandTargetRotY = 0; rightHandTargetRotZ = 0; break;
+        case EXPRESSIONS.TALKING:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 1;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 1.1; targetMouthScaleY = 1;
+            targetMouthPosY = -0.45; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0; targetGlowOpacity = 0.4;
+            targetEyeColor.setHex(0x00e5cc); targetMouthColor.setHex(0x00ffcc);
+            handsVisible = false; break;
+        case EXPRESSIONS.SLEEPING:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.08;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 0.08;
+            targetLeftEyePosY = 0.1; targetRightEyePosY = 0.1;
+            targetMouthScaleX = 0.5; targetMouthScaleY = 0.6;
+            targetMouthPosY = -0.5; targetMouthRotation = 0;
+            targetHeadTilt = 0.2; targetHeadTiltZ = 0.1; targetGlowOpacity = 0.15;
+            targetEyeColor.setHex(0x4466aa); targetMouthColor.setHex(0x4466aa);
+            handsVisible = false; break;
+        case EXPRESSIONS.SURPRISED:
+            targetLeftEyeScaleX = 1.2; targetLeftEyeScaleY = 1.2;
+            targetRightEyeScaleX = 1.2; targetRightEyeScaleY = 1.2;
+            targetLeftEyePosY = 0.2; targetRightEyePosY = 0.2;
+            targetMouthScaleX = 1.2; targetMouthScaleY = 2.5;
+            targetMouthPosY = -0.4; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0; targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0xffee00); targetMouthColor.setHex(0xffee00);
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.5; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.5; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.5; rightHandTargetRotZ = 0; break;
+        case EXPRESSIONS.WINK:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 0.05;
+            targetRightEyeScaleX = 1; targetRightEyeScaleY = 1;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.18;
+            targetMouthScaleX = 1.2; targetMouthScaleY = 1;
+            targetMouthPosY = -0.42; targetMouthRotation = 0.05;
+            targetHeadTilt = 0; targetHeadTiltZ = -0.08; targetGlowOpacity = 0.4;
+            targetEyeColor.setHex(0x00ff99); targetMouthColor.setHex(0x00ff99);
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.5; leftHandTargetZ = 0.8;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.3; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 1.1; rightHandTargetY = -0.5; rightHandTargetZ = 0.3;
+            rightHandTargetRotX = 0; rightHandTargetRotY = 0; rightHandTargetRotZ = 0; break;
+        case EXPRESSIONS.LOVE:
+            targetLeftEyeScaleX = 1.3; targetLeftEyeScaleY = 1.3;
+            targetRightEyeScaleX = 1.3; targetRightEyeScaleY = 1.3;
+            targetLeftEyePosY = 0.25; targetRightEyePosY = 0.25;
+            targetMouthScaleX = 1.5; targetMouthScaleY = 1.3;
+            targetMouthPosY = -0.38; targetMouthRotation = 0;
+            targetHeadTilt = -0.05; targetHeadTiltZ = 0; targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0xff44aa); targetMouthColor.setHex(0xff66bb);
+            handsVisible = true;
+            leftHandTargetX = -0.4; leftHandTargetY = -0.2; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.6; leftHandTargetRotZ = 0.5;
+            rightHandTargetX = 0.4; rightHandTargetY = -0.2; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.6; rightHandTargetRotZ = -0.5; break;
+        case EXPRESSIONS.ANGRY:
+            targetLeftEyeScaleX = 1.1; targetLeftEyeScaleY = 0.7;
+            targetRightEyeScaleX = 1.1; targetRightEyeScaleY = 0.7;
+            targetLeftEyePosY = 0.08; targetRightEyePosY = 0.08;
+            targetMouthScaleX = 0.9; targetMouthScaleY = 0.7;
+            targetMouthPosY = -0.48; targetMouthRotation = -0.08;
+            targetHeadTilt = 0; targetHeadTiltZ = 0; targetGlowOpacity = 0.6;
+            targetEyeColor.setHex(0xff3333); targetMouthColor.setHex(0xff3333);
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.3; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.3; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.3; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.3; rightHandTargetRotZ = 0; break;
+        case EXPRESSIONS.SAD:
+            targetLeftEyeScaleX = 0.9; targetLeftEyeScaleY = 0.8;
+            targetRightEyeScaleX = 0.9; targetRightEyeScaleY = 0.8;
+            targetLeftEyePosY = 0.05; targetRightEyePosY = 0.05;
+            targetMouthScaleX = 0.6; targetMouthScaleY = 0.5;
+            targetMouthPosY = -0.5; targetMouthRotation = -0.05;
+            targetHeadTilt = 0.15; targetHeadTiltZ = 0; targetGlowOpacity = 0.2;
+            targetEyeColor.setHex(0x6688cc); targetMouthColor.setHex(0x6688cc);
+            handsVisible = true;
+            leftHandTargetX = -1.1; leftHandTargetY = -1.0; leftHandTargetZ = 0.2;
+            leftHandTargetRotX = 0.5; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 1.1; rightHandTargetY = -1.0; rightHandTargetZ = 0.2;
+            rightHandTargetRotX = 0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.2; break;
+        case EXPRESSIONS.CONFUSED:
+            targetLeftEyeScaleX = 1; targetLeftEyeScaleY = 1;
+            targetRightEyeScaleX = 0.8; targetRightEyeScaleY = 0.6;
+            targetLeftEyePosY = 0.2; targetRightEyePosY = 0.1;
+            targetMouthScaleX = 0.8; targetMouthScaleY = 0.7;
+            targetMouthPosY = -0.46; targetMouthRotation = 0.08;
+            targetHeadTilt = 0; targetHeadTiltZ = 0.12; targetGlowOpacity = 0.3;
+            targetEyeColor.setHex(0xffaa00); targetMouthColor.setHex(0xffaa00);
+            handsVisible = true;
+            leftHandTargetX = -0.6; leftHandTargetY = -0.6; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0.3; leftHandTargetRotY = 0.4; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.2; rightHandTargetY = -0.3; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.2; break;
+        case EXPRESSIONS.EXCITED:
+            targetLeftEyeScaleX = 1.4; targetLeftEyeScaleY = 1.4;
+            targetRightEyeScaleX = 1.4; targetRightEyeScaleY = 1.4;
+            targetLeftEyePosY = 0.25; targetRightEyePosY = 0.25;
+            targetMouthScaleX = 1.4; targetMouthScaleY = 2.0;
+            targetMouthPosY = -0.38; targetMouthRotation = 0;
+            targetHeadTilt = -0.1; targetHeadTiltZ = 0; targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0x00ffff); targetMouthColor.setHex(0x00ffff);
+            handsVisible = true;
+            leftHandTargetX = -1.2; leftHandTargetY = -1.1; leftHandTargetZ = 0.5;
+            leftHandTargetRotX = 0.6; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.2; rightHandTargetY = -1.1; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0.6; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.3; break;
+        case EXPRESSIONS.DIZZY:
+            targetLeftEyeScaleX = 0.8; targetLeftEyeScaleY = 0.8;
+            targetRightEyeScaleX = 0.8; targetRightEyeScaleY = 0.8;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 0.6; targetMouthScaleY = 0.5;
+            targetMouthPosY = -0.48; targetMouthRotation = 0.05;
+            targetHeadTilt = 0.1; targetHeadTiltZ = -0.1; targetGlowOpacity = 0.3;
+            targetEyeColor.setHex(0xff66ff); targetMouthColor.setHex(0xff66ff);
+            handsVisible = true;
+            leftHandTargetX = -0.7; leftHandTargetY = -0.5; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0.4; leftHandTargetRotY = 0.3; leftHandTargetRotZ = 0.4;
+            rightHandTargetX = 0.7; rightHandTargetY = -0.5; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0.4; rightHandTargetRotY = -0.3; rightHandTargetRotZ = -0.4; break;
+        case EXPRESSIONS.STAR_EYES:
+            targetLeftEyeScaleX = 1.5; targetLeftEyeScaleY = 1.5;
+            targetRightEyeScaleX = 1.5; targetRightEyeScaleY = 1.5;
+            targetLeftEyePosY = 0.22; targetRightEyePosY = 0.22;
+            targetMouthScaleX = 1.6; targetMouthScaleY = 1.5;
+            targetMouthPosY = -0.36; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0; targetGlowOpacity = 0.6;
+            targetEyeColor.setHex(0xffdd00); targetMouthColor.setHex(0x00ff99);
+            handsVisible = true;
+            leftHandTargetX = -1.1; leftHandTargetY = -1.0; leftHandTargetZ = 0.5;
+            leftHandTargetRotX = 0.5; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 1.1; rightHandTargetY = -1.0; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.2; break;
+        case EXPRESSIONS.SCARED:
+            targetLeftEyeScaleX = 1.1; targetLeftEyeScaleY = 1.3;
+            targetRightEyeScaleX = 1.1; targetRightEyeScaleY = 1.3;
+            targetLeftEyePosY = 0.22; targetRightEyePosY = 0.22;
+            targetMouthScaleX = 0.5; targetMouthScaleY = 1.5;
+            targetMouthPosY = -0.42; targetMouthRotation = 0;
+            targetHeadTilt = -0.15; targetHeadTiltZ = 0; targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0xffff00); targetMouthColor.setHex(0xffff00);
+            handsVisible = true;
+            leftHandTargetX = -1.2; leftHandTargetY = -0.8; leftHandTargetZ = 0.5;
+            leftHandTargetRotX = 0.5; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.2; rightHandTargetY = -0.8; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.3; break;
+        case EXPRESSIONS.LAUGHING:
+            targetLeftEyeScaleX = 1.2; targetLeftEyeScaleY = 0.12;
+            targetRightEyeScaleX = 1.2; targetRightEyeScaleY = 0.12;
+            targetLeftEyePosY = 0.25; targetRightEyePosY = 0.25;
+            targetMouthScaleX = 1.5; targetMouthScaleY = 1.0;
+            targetMouthPosY = -0.38; targetMouthRotation = 0;
+            targetHeadTilt = -0.15; targetHeadTiltZ = 0; targetGlowOpacity = 0.6;
+            targetEyeColor.setHex(0x00ff99); targetMouthColor.setHex(0x00ff99);
+            handsVisible = true;
+            leftHandTargetX = -0.9; leftHandTargetY = -0.6; leftHandTargetZ = 0.8;
+            leftHandTargetRotX = 0.3; leftHandTargetRotY = 0.4; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 0.9; rightHandTargetY = -0.6; rightHandTargetZ = 0.8;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = -0.4; rightHandTargetRotZ = -0.2; break;
+        case EXPRESSIONS.HIDING_EYES:
+            targetLeftEyeScaleX = 0.8; targetLeftEyeScaleY = 0.15;
+            targetRightEyeScaleX = 0.8; targetRightEyeScaleY = 0.15;
+            targetLeftEyePosY = 0.15; targetRightEyePosY = 0.15;
+            targetMouthScaleX = 0.3; targetMouthScaleY = 0.3;
+            targetMouthPosY = -0.42; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0; targetGlowOpacity = 0.15;
+            targetEyeColor.setHex(0xff8800); targetMouthColor.setHex(0xff8800);
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.85; rightHandTargetY = -1.35; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = 0; rightHandTargetRotZ = 0; break;
+    }
+}
+
+// Case-insensitive setExpression (the fix)
+function setExpression(name) {
+    var upper = String(name || '').toUpperCase().trim();
+    if (EXPRESSIONS[upper]) {
+        currentExpression = EXPRESSIONS[upper];
+        updateExpression();
+        return true;
+    }
+    return false;
+}
+
+// ── Hand Gesture System (same as argos_robot.html) ──
+var GESTURES = ['NONE', 'WAVE', 'POINT', 'FIST', 'OPEN', 'HEART', 'THUMBS_UP', 'PEACE',
+    'THINK', 'BELLY', 'CHEEKS', 'DOWN', 'RAISED', 'CLAP', 'SHRUG', 'SCRATCH', 'TREMBLE', 'REST'];
+
+function applyHandGesture(gesture) {
+    switch (gesture) {
+        case 'NONE': handsVisible = false; break;
+        case 'WAVE':
+            handsVisible = true;
+            leftHandTargetX = -1.2; leftHandTargetY = -1.0; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0.3; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.4;
+            rightHandTargetX = 1.2; rightHandTargetY = -1.0; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.4; break;
+        case 'POINT':
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.9; rightHandTargetY = 0.0; rightHandTargetZ = 1.2;
+            rightHandTargetRotX = -0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = 0; break;
+        case 'FIST':
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.3; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.3; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.3; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.3; rightHandTargetRotZ = 0; break;
+        case 'OPEN':
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.5; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = -0.2; leftHandTargetRotY = 0.3; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.5; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = -0.2; rightHandTargetRotY = -0.3; rightHandTargetRotZ = 0; break;
+        case 'HEART':
+            handsVisible = true;
+            leftHandTargetX = -0.4; leftHandTargetY = -0.2; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.6; leftHandTargetRotZ = 0.5;
+            rightHandTargetX = 0.4; rightHandTargetY = -0.2; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.6; rightHandTargetRotZ = -0.5; break;
+        case 'THUMBS_UP':
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = 0.1; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = -0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = 0; break;
+        case 'PEACE':
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.9; rightHandTargetY = 0.2; rightHandTargetZ = 1.1;
+            rightHandTargetRotX = -0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = 0.3; break;
+        case 'THINK':
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.3; rightHandTargetY = 0.1; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = 0.2; rightHandTargetRotY = 0.5; rightHandTargetRotZ = 0.3; break;
+        case 'BELLY':
+            handsVisible = true;
+            leftHandTargetX = -0.5; leftHandTargetY = -0.6; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0.3; leftHandTargetRotY = 0.4; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 0.5; rightHandTargetY = -0.6; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = -0.4; rightHandTargetRotZ = -0.2; break;
+        case 'CHEEKS':
+            handsVisible = true;
+            leftHandTargetX = -1.0; leftHandTargetY = -0.2; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.0; rightHandTargetY = -0.2; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.5; rightHandTargetRotZ = 0; break;
+        case 'DOWN':
+            handsVisible = true;
+            leftHandTargetX = -1.1; leftHandTargetY = -1.1; leftHandTargetZ = 0.5;
+            leftHandTargetRotX = 0.5; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.2;
+            rightHandTargetX = 1.1; rightHandTargetY = -1.1; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.2; break;
+        case 'RAISED':
+            handsVisible = true;
+            leftHandTargetX = -1.1; leftHandTargetY = 0.5; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = -0.6; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.1; rightHandTargetY = 0.5; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = -0.6; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.3; break;
+        case 'CLAP':
+            handsVisible = true;
+            leftHandTargetX = -0.25; leftHandTargetY = -0.4; leftHandTargetZ = 1.0;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.25; rightHandTargetY = -0.4; rightHandTargetZ = 1.0;
+            rightHandTargetRotX = 0; rightHandTargetRotY = -0.5; rightHandTargetRotZ = 0; break;
+        case 'SHRUG':
+            handsVisible = true;
+            leftHandTargetX = -1.3; leftHandTargetY = -0.1; leftHandTargetZ = 0.7;
+            leftHandTargetRotX = -0.3; leftHandTargetRotY = 0.5; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.3; rightHandTargetY = -0.1; rightHandTargetZ = 0.7;
+            rightHandTargetRotX = -0.3; rightHandTargetRotY = -0.5; rightHandTargetRotZ = -0.3; break;
+        case 'SCRATCH':
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.5; rightHandTargetY = 0.8; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0.3; rightHandTargetRotY = 0; rightHandTargetRotZ = 0.4; break;
+        case 'TREMBLE':
+            handsVisible = true;
+            leftHandTargetX = -1.2; leftHandTargetY = -0.8; leftHandTargetZ = 0.5;
+            leftHandTargetRotX = 0.5; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.3;
+            rightHandTargetX = 1.2; rightHandTargetY = -0.8; rightHandTargetZ = 0.5;
+            rightHandTargetRotX = 0.5; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.3; break;
+        case 'REST':
+            handsVisible = true;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 0.85; rightHandTargetY = -1.35; rightHandTargetZ = 0.9;
+            rightHandTargetRotX = 0; rightHandTargetRotY = 0; rightHandTargetRotZ = 0; break;
+    }
+}
+
+function setHandGesture(name) {
+    var upper = String(name || '').toUpperCase().trim();
+    applyHandGesture(upper);
+    return GESTURES.indexOf(upper) >= 0;
+}
+
+function lerp(current, target, speed) {
+    return current + (target - current) * speed;
+}
+
+// ── Test UI ──
+var exprList = Object.keys(EXPRESSIONS);
+var testIndex = 0;
+var autoMode = true;
+var autoTimer = 0;
+var autoInterval = 2.0; // seconds per expression
+var logEl = document.getElementById('log');
+var currentExprEl = document.getElementById('currentExpr');
+var controlsEl = document.getElementById('controls');
+
+function logMsg(msg, pass) {
+    var div = document.createElement('div');
+    div.textContent = msg;
+    div.className = pass ? 'pass' : 'fail';
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setTestExpression(name) {
+    var ok = setExpression(name);
+    currentExprEl.textContent = name + (ok ? ' ✓' : ' ✗');
+    logMsg((ok ? 'PASS' : 'FAIL') + ': ' + name, ok);
+
+    // Update button active state
+    var btns = controlsEl.querySelectorAll('button.expr-btn');
+    btns.forEach(function(b) {
+        b.classList.toggle('active', b.dataset.expr === name);
+    });
+}
+
+function nextExpression() {
+    testIndex = (testIndex + 1) % exprList.length;
+    setTestExpression(exprList[testIndex]);
+}
+
+// Build expression buttons
+exprList.forEach(function(name, i) {
+    var btn = document.createElement('button');
+    btn.textContent = name;
+    btn.className = 'expr-btn';
+    btn.dataset.expr = name;
+    btn.addEventListener('click', function() {
+        autoMode = false;
+        testIndex = i;
+        setTestExpression(name);
+    });
+    controlsEl.appendChild(btn);
+});
+
+// ── Hand gesture buttons ──
+var gestureLabel = document.createElement('div');
+gestureLabel.textContent = '── Hand Gestures ──';
+gestureLabel.style.marginTop = '10px';
+gestureLabel.style.color = '#00aaff';
+controlsEl.appendChild(gestureLabel);
+
+var currentGestureEl = document.createElement('div');
+currentGestureEl.id = 'currentGesture';
+currentGestureEl.style.fontSize = '14px';
+currentGestureEl.style.color = '#00aaff';
+currentGestureEl.textContent = 'Gesture: REST';
+controlsEl.appendChild(currentGestureEl);
+
+var gestureTestIndex = 0;
+var autoGestureMode = true;
+var autoGestureTimer = 0;
+var autoGestureInterval = 2.0;
+
+function setTestGesture(name) {
+    var ok = setHandGesture(name);
+    currentGestureEl.textContent = 'Gesture: ' + name + (ok ? ' ✓' : ' ✗');
+    logMsg((ok ? 'PASS' : 'FAIL') + ': HAND:' + name, ok);
+    var btns = controlsEl.querySelectorAll('button.gesture-btn');
+    btns.forEach(function(b) {
+        b.classList.toggle('active', b.dataset.gesture === name);
+    });
+}
+
+function nextGesture() {
+    gestureTestIndex = (gestureTestIndex + 1) % GESTURES.length;
+    setTestGesture(GESTURES[gestureTestIndex]);
+}
+
+GESTURES.forEach(function(name, i) {
+    var btn = document.createElement('button');
+    btn.textContent = name;
+    btn.className = 'gesture-btn';
+    btn.dataset.gesture = name;
+    btn.addEventListener('click', function() {
+        autoGestureMode = false;
+        gestureTestIndex = i;
+        setTestGesture(name);
+    });
+    controlsEl.appendChild(btn);
+});
+
+// Auto/Manual toggle for gestures
+var autoGestureBtn = document.createElement('button');
+autoGestureBtn.textContent = 'AUTO GEST: ON';
+autoGestureBtn.style.marginTop = '8px';
+autoGestureBtn.addEventListener('click', function() {
+    autoGestureMode = !autoGestureMode;
+    autoGestureBtn.textContent = 'AUTO GEST: ' + (autoGestureMode ? 'ON' : 'OFF');
+    autoGestureBtn.classList.toggle('active', autoGestureMode);
+    if (autoGestureMode) autoGestureTimer = 0;
+});
+controlsEl.appendChild(autoGestureBtn);
+
+// Auto/Manual toggle
+var autoBtn = document.createElement('button');
+autoBtn.textContent = 'AUTO: ON';
+autoBtn.style.marginTop = '8px';
+autoBtn.addEventListener('click', function() {
+    autoMode = !autoMode;
+    autoBtn.textContent = 'AUTO: ' + (autoMode ? 'ON' : 'OFF');
+    autoBtn.classList.toggle('active', autoMode);
+    if (autoMode) autoTimer = 0;
+});
+controlsEl.appendChild(autoBtn);
+
+// Spin test button — verify hands stay in front during rotation
+var spinBtn = document.createElement('button');
+spinBtn.textContent = 'SPIN TEST';
+spinBtn.style.marginLeft = '4px';
+var spinMode = false;
+spinBtn.addEventListener('click', function() {
+    spinMode = !spinMode;
+    spinBtn.classList.toggle('active', spinMode);
+    logMsg('Spin test: ' + (spinMode ? 'ON — hands should stay in front' : 'OFF'), true);
+});
+controlsEl.appendChild(spinBtn);
+
+// Run initial test — verify all expressions are valid
+logMsg('=== Expression Test Suite ===', true);
+logMsg('Testing ' + exprList.length + ' expressions...', true);
+var allPass = true;
+exprList.forEach(function(name) {
+    var upper = name.toUpperCase();
+    if (!EXPRESSIONS[upper]) { allPass = false; logMsg('FAIL: ' + name + ' not found', false); }
+});
+if (allPass) logMsg('All ' + exprList.length + ' expressions registered OK', true);
+
+// Test case-insensitivity
+logMsg('Testing case-insensitivity...', true);
+var ciPass = setExpression('happy') && currentExpression === 'happy';
+logMsg('lowercase "happy": ' + (ciPass ? 'PASS' : 'FAIL'), ciPass);
+var ciPass2 = setExpression('HAPPY') && currentExpression === 'happy';
+logMsg('uppercase "HAPPY": ' + (ciPass2 ? 'PASS' : 'FAIL'), ciPass2);
+var ciPass3 = setExpression('Happy') && currentExpression === 'happy';
+logMsg('mixed "Happy": ' + (ciPass3 ? 'PASS' : 'FAIL'), ciPass3);
+
+// Test hands color
+logMsg('Testing hands color (neon blue 0x00aaff)...', true);
+var colorPass = handMat.color.getHex() === 0x00aaff;
+logMsg('Hand color: ' + (colorPass ? 'PASS' : 'FAIL'), colorPass);
+
+// Test hand gestures
+logMsg('=== Hand Gesture Test Suite ===', true);
+logMsg('Testing ' + GESTURES.length + ' gestures...', true);
+var allGesturesPass = true;
+GESTURES.forEach(function(name) {
+    var ok = setHandGesture(name);
+    if (!ok) { allGesturesPass = false; logMsg('FAIL: gesture ' + name + ' not recognized', false); }
+});
+if (allGesturesPass) logMsg('All ' + GESTURES.length + ' hand gestures registered OK', true);
+
+// Test gesture case-insensitivity
+logMsg('Testing gesture case-insensitivity...', true);
+var gPass = setHandGesture('wave') && handsVisible === true;
+logMsg('lowercase "wave": ' + (gPass ? 'PASS' : 'FAIL'), gPass);
+var gPass2 = setHandGesture('WAVE') && handsVisible === true;
+logMsg('uppercase "WAVE": ' + (gPass2 ? 'PASS' : 'FAIL'), gPass2);
+
+// Start with first expression + REST gesture
+setTestExpression(exprList[0]);
+setTestGesture('REST');
+
+// ── Animation loop ──
+var lastTime = performance.now();
+function animate() {
+    requestAnimationFrame(animate);
+    var now = performance.now();
+    var dt = (now - lastTime) / 1000;
+    lastTime = now;
+    if (dt > 0.1) dt = 0.016;
+    animTime += dt;
+    var lerpSpeed = 8 * dt;
+
+    // Auto-cycle expressions
+    if (autoMode) {
+        autoTimer += dt;
+        if (autoTimer >= autoInterval) {
+            autoTimer = 0;
+            nextExpression();
+        }
+    }
+
+    // Auto-cycle hand gestures
+    if (autoGestureMode) {
+        autoGestureTimer += dt;
+        if (autoGestureTimer >= autoGestureInterval) {
+            autoGestureTimer = 0;
+            nextGesture();
+        }
+    }
+
+    // Spin test — rotate robot to verify hands stay in front
+    if (spinMode) {
+        robot.rotation.y += dt * 2.0; // continuous spin
+    } else {
+        robot.rotation.y = lerp(robot.rotation.y, 0, lerpSpeed);
+    }
+
+    // Idle bob
+    robot.position.y = Math.sin(animTime * 1.8) * 0.06;
+
+    // Interpolate eyes
+    leftEye.scale.x = lerp(leftEye.scale.x, targetLeftEyeScaleX, lerpSpeed);
+    leftEye.scale.y = lerp(leftEye.scale.y, targetLeftEyeScaleY, lerpSpeed);
+    leftEye.position.y = lerp(leftEye.position.y, targetLeftEyePosY, lerpSpeed);
+    rightEye.scale.x = lerp(rightEye.scale.x, targetRightEyeScaleX, lerpSpeed);
+    rightEye.scale.y = lerp(rightEye.scale.y, targetRightEyeScaleY, lerpSpeed);
+    rightEye.position.y = lerp(rightEye.position.y, targetRightEyePosY, lerpSpeed);
+
+    // Interpolate mouth
+    mouth.scale.x = lerp(mouth.scale.x, targetMouthScaleX, lerpSpeed);
+    mouth.scale.y = lerp(mouth.scale.y, targetMouthScaleY, lerpSpeed);
+    mouth.position.y = lerp(mouth.position.y, targetMouthPosY, lerpSpeed);
+    mouth.rotation.z = lerp(mouth.rotation.z, targetMouthRotation, lerpSpeed);
+
+    // Head tilt
+    robot.rotation.x = lerp(robot.rotation.x, targetHeadTilt, lerpSpeed);
+    robot.rotation.z = lerp(robot.rotation.z, targetHeadTiltZ, lerpSpeed);
+
+    // Hand interpolation
+    var handLerpSpeed = 6 * dt;
+    leftHand.position.x = lerp(leftHand.position.x, leftHandTargetX, handLerpSpeed);
+    leftHand.position.y = lerp(leftHand.position.y, leftHandTargetY, handLerpSpeed);
+    leftHand.position.z = lerp(leftHand.position.z, leftHandTargetZ, handLerpSpeed);
+    leftHand.rotation.x = lerp(leftHand.rotation.x, leftHandTargetRotX, handLerpSpeed);
+    leftHand.rotation.y = lerp(leftHand.rotation.y, leftHandTargetRotY, handLerpSpeed);
+    leftHand.rotation.z = lerp(leftHand.rotation.z, leftHandTargetRotZ, handLerpSpeed);
+    rightHand.position.x = lerp(rightHand.position.x, rightHandTargetX, handLerpSpeed);
+    rightHand.position.y = lerp(rightHand.position.y, rightHandTargetY, handLerpSpeed);
+    rightHand.position.z = lerp(rightHand.position.z, rightHandTargetZ, handLerpSpeed);
+    rightHand.rotation.x = lerp(rightHand.rotation.x, rightHandTargetRotX, handLerpSpeed);
+    rightHand.rotation.y = lerp(rightHand.rotation.y, rightHandTargetRotY, handLerpSpeed);
+    rightHand.rotation.z = lerp(rightHand.rotation.z, rightHandTargetRotZ, handLerpSpeed);
+
+    // Sync hands group with robot position (NOT rotation — hands always face camera)
+    handsGroup.position.copy(robot.position);
+    handsGroup.scale.copy(robot.scale);
+
+    // Hand visibility
+    var handTargetOpacity = handsVisible ? 0.9 : 0.0;
+    var handGlowTarget = handsVisible ? 0.25 : 0.0;
+    handMat.opacity = lerp(handMat.opacity, handTargetOpacity, handLerpSpeed);
+    handGlowMat.opacity = lerp(handGlowMat.opacity, handGlowTarget, handLerpSpeed);
+
+    // Glow opacity
+    leftGlow.material.opacity = lerp(leftGlow.material.opacity, targetGlowOpacity, lerpSpeed);
+    rightGlow.material.opacity = lerp(rightGlow.material.opacity, targetGlowOpacity, lerpSpeed);
+    mouthGlow.material.opacity = lerp(mouthGlow.material.opacity, targetGlowOpacity * 0.6, lerpSpeed);
+
+    // Color interpolation
+    currentEyeColor.lerp(targetEyeColor, lerpSpeed);
+    currentMouthColor.lerp(targetMouthColor, lerpSpeed);
+    leftEye.material.color.copy(currentEyeColor);
+    rightEye.material.color.copy(currentEyeColor);
+    mouth.material.color.copy(currentMouthColor);
+    leftGlow.material.color.copy(currentEyeColor);
+    rightGlow.material.color.copy(currentEyeColor);
+    mouthGlow.material.color.copy(currentMouthColor);
+
+    renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', function() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate();
+})();
+</script>
+</body>
+</html>

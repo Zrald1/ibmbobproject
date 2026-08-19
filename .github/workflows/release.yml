@@ -1,0 +1,213 @@
+name: Release Builds
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0 cmake;3.22.1 ndk;27.0.12077973'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Decode release keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/argos-release.keystore
+          echo "Keystore decoded: $(ls -la android/app/argos-release.keystore)"
+
+      - name: Build Android APK (Release)
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: app/argos-release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Build Android AAB (Release)
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: app/argos-release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+        run: gradle bundleRelease --no-daemon
+
+      - name: Rename APK and AAB
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk argos-android-release.apk
+          cp android/app/build/outputs/bundle/release/app-release.aab argos-android-release.aab
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: argos-android-release-apk
+          path: argos-android-release.apk
+          retention-days: 90
+
+      - name: Upload Android AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: argos-android-release-aab
+          path: argos-android-release.aab
+          retention-days: 90
+
+  release:
+    needs: [build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download Android APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: argos-android-release-apk
+          path: artifacts
+
+      - name: Download Android AAB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: argos-android-release-aab
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Argos ${{ steps.tag.outputs.tag }}
+          body: |
+            # Argos ${{ steps.tag.outputs.tag }}
+
+            ## Downloads
+            - **Android APK**: `argos-android-release.apk` — sideload on your phone (enable "Install from unknown sources")
+            - **Android AAB**: `argos-android-release.aab` — Google Play Store bundle
+
+            ## What's New in v3.33.0
+
+            ### 3D Redesign — Circular Robot + Modern Articulated Hands
+            - **NEW**: Circular spherical head — the robot's head is now a smooth sphere instead of a box
+              - Clean circular silhouette from every angle
+              - Modern MeshPhysicalMaterial with clearcoat gloss and metalness for a premium robotic shell
+              - Subtle wireframe edge glow replaces sharp box edges
+              - Eyes, mouth, and back panel reprojected onto the curved sphere surface
+              - Circular back panel with ring glow and repositioned camera lens + antenna
+            - **NEW**: Modern articulated hands — complete hand rebuild
+              - 4 fingers + thumb (up from 3 box fingers) with anatomical proportions
+              - Capsule phalanges (cylinder + sphere caps) for smooth rounded finger segments
+              - Knuckle joint spheres at each finger joint for articulation detail
+              - Rounded sphere palm (replaces flat box palm)
+              - MeshPhongMaterial with emissive glow for a modern neon look
+            - **NEW**: Finger curl animation — all 17 gestures now drive per-finger curling
+              - Each finger has proximal + distal joint groups that rotate independently
+              - Anatomical DIP/PIP joint ratios for natural-looking finger bending
+              - Smooth interpolation (8x/second lerp) for natural motion
+              - Gesture-specific curl: FIST (all curled), POINT (index extended), PEACE (V sign), THUMBS_UP (thumb up), OPEN (all extended), etc.
+
+            ### Voice Pipeline Freeze Fixes
+            - **FIX**: 3D robot no longer freezes during voice chat
+              - Removed premature `robotSetState("idle")` that was overriding the talking state immediately after `displayAndSpeakVoiceReply()`
+              - Robot now stays in talking state until TTS actually finishes
+            - **FIX**: Talking state now tied to actual TTS completion via UtteranceProgressListener
+              - Replaces the fixed 5-second timeout that was clearing the talking animation early/late
+              - onDone/onError callbacks reset the robot to idle exactly when speech finishes
+            - **FIX**: Client-side watchdog timeout (45s) for voice pipeline thinking state
+              - Prevents permanent freeze if the backend hangs or is slow
+              - Resets robot to idle and informs the user
+            - **FIX**: Non-voice TTS (reminders, thought bubbles) no longer interferes with voice pipeline state
+
+            ### Backend Fixes
+            - **FIX**: `chat_with_llm` now returns `Err` on HTTP errors instead of `Ok` with an error string
+              - Previously a 503/500/429 from the primary LLM was returned as `Ok(("[LLM error: 503]", ...))`
+              - This skipped provider fallback and spoke the error string to the user
+              - Now returns `Err`, so the fallback provider is tried, and if all fail, a proper error message is returned
+            - **FIX**: Unescaped double quotes in system prompt strings (chat.rs, bedrock.rs) that prevented compilation
+            - **NEW**: 5 simulation tests for backend error handling (503, 500, 429, success, empty choices)
+
+            ## Features
+            - Three.js WebView robot renderer on Android with rich 3D animations
+            - Auto-TTS for AI chat responses and thought bubbles
+            - Voice input: double-tap robot to record, tap again to think
+            - Single-tap robot to open chat box (text input)
+            - Long-press robot for Settings/Standby/Schedule/Notes menu
+            - Live transcription on speech bubble during voice recording
+            - Native hand tracking with front camera + pinch gesture to drag robot
+            - Streaming chat with tool execution
+            - SQLite/JSONL persistent memory across sessions
+            - Proactive speech bubbles at user-adjustable intervals
+
+            ## AI Server
+            Backend: Configure your own backend server
+          files: |
+            artifacts/argos-android-release.apk
+            artifacts/argos-android-release.aab
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+      - name: Write service account JSON
+        env:
+          GCP_SA_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
+        run: |
+          # Write the secret to a file via env var (avoids shell interpolation issues)
+          printenv GCP_SA_JSON > service-account.json
+          # Check if it's base64-encoded (no curly braces = likely base64)
+          if ! grep -q '{' service-account.json 2>/dev/null; then
+            echo "Looks like base64, decoding..."
+            base64 -d service-account.json > service-account-decoded.json
+            mv service-account-decoded.json service-account.json
+          fi
+          echo "File size: $(wc -c < service-account.json) bytes"
+          # Validate JSON
+          python3 -c "import json; d=json.load(open('service-account.json')); print('Valid JSON, email:', d.get('client_email','?'))"
+
+      - name: Upload AAB to Google Play Store (Internal Testing)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: service-account.json
+          packageName: com.example.argos
+          releaseFiles: artifacts/argos-android-release.aab
+          track: internal
+          status: completed
+          inAppUpdatePriority: 3
+          changesNotSentForReview: false
