@@ -1,7 +1,7 @@
 name: Release Builds
 
 # Triggered by pushing a version tag, e.g.
-#   git tag v3.34.0 && git push origin v3.34.0
+#   git tag v1.0.0 && git push origin v1.0.0
 # or manually via "Run workflow".
 on:
   push:
@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v3.34.0)'
+        description: 'Release tag (e.g. v1.0.0)'
         required: true
-        default: 'v3.34.0'
+        default: 'v1.0.0'
 
 permissions:
   contents: write
@@ -25,12 +25,9 @@ permissions:
 #   ANDROID_KEY_ALIAS           key alias (e.g. argos-key)          [optional]
 #   ANDROID_KEY_ALIAS_PASSWORD  key password
 #
-#   GOOGLE_PLAY_SERVICE_ACCOUNT Play service-account JSON (optional — the
-#                               Play upload step is skipped when absent)
-#
 # Generate ANDROID_KEYSTORE_BASE64 (one line, no wrapping):
-#   Linux/macOS : base64 -w0 argos-release.keystore
-#   Windows PS  : [Convert]::ToBase64String([IO.File]::ReadAllBytes("argos-release.keystore"))
+#   pwsh scripts/setup-signing-secrets.ps1 -Keystore <path>
+#   ./scripts/setup-signing-secrets.sh <path>
 # ─────────────────────────────────────────────────────────────────────────
 
 jobs:
@@ -67,6 +64,12 @@ jobs:
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing/argos-release.keystore"
           echo "Keystore written: $(wc -c < "$RUNNER_TEMP/signing/argos-release.keystore") bytes"
 
+      # The repo is authored on Windows, so gradlew can lose its executable
+      # bit in the checkout — without this the step fails with exit code 126.
+      - name: Make gradlew executable
+        working-directory: android
+        run: chmod +x gradlew
+
       - name: Build Android APK (Release)
         working-directory: android
         env:
@@ -90,9 +93,10 @@ jobs:
       - name: Verify the APK is release-signed
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
-          "$ANDROID_HOME"/build-tools/36.0.0/apksigner verify --print-certs "$APK"
+          APKSIGNER="$ANDROID_HOME"/build-tools/36.0.0/apksigner
+          "$APKSIGNER" verify --print-certs "$APK"
           # Fail the build if it fell back to the debug key
-          if "$ANDROID_HOME"/build-tools/36.0.0/apksigner verify --print-certs "$APK" | grep -q "CN=Android Debug"; then
+          if "$APKSIGNER" verify --print-certs "$APK" | grep -q "CN=Android Debug"; then
             echo "::error::APK was signed with the DEBUG key — signing secrets are wrong."
             exit 1
           fi
@@ -126,9 +130,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Determine tag
         id: tag
         run: |
@@ -156,7 +157,7 @@ jobs:
 
             ## Downloads
             - **Android APK** — `argos-android-release.apk` (sideload on your phone)
-            - **Android AAB** — `argos-android-release.aab` (Google Play bundle)
+            - **Android AAB** — `argos-android-release.aab`
 
             Release notes are generated automatically below.
           files: |
@@ -165,52 +166,3 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-
-  publish-play:
-    # Only runs when the Play service-account secret is configured.
-    needs: [build-android]
-    if: ${{ github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check for Play credentials
-        id: check
-        env:
-          SA: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
-        run: |
-          if [ -z "$SA" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "No GOOGLE_PLAY_SERVICE_ACCOUNT secret — skipping Play upload."
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Download AAB artifact
-        if: steps.check.outputs.skip == 'false'
-        uses: actions/download-artifact@v4
-        with:
-          name: argos-android-release-aab
-          path: artifacts
-
-      - name: Write service account JSON
-        if: steps.check.outputs.skip == 'false'
-        env:
-          GCP_SA_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
-        run: |
-          printenv GCP_SA_JSON > service-account.json
-          if ! grep -q '{' service-account.json 2>/dev/null; then
-            base64 -d service-account.json > service-account-decoded.json
-            mv service-account-decoded.json service-account.json
-          fi
-          python3 -c "import json; d=json.load(open('service-account.json')); print('Valid JSON, email:', d.get('client_email','?'))"
-
-      - name: Upload AAB to Google Play (internal testing)
-        if: steps.check.outputs.skip == 'false'
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJson: service-account.json
-          packageName: com.example.argos
-          releaseFiles: artifacts/argos-android-release.aab
-          track: internal
-          status: completed
-          inAppUpdatePriority: 3
-          changesNotSentForReview: false
