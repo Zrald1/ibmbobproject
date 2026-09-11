@@ -10,7 +10,6 @@
 
 #include "agent_client_core.h"
 #include "platform.h"
-#include "whisper_wrapper.h"
 
 #define TAG "Argos"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -181,7 +180,7 @@ Java_com_argos_companion_FloatingRobotService_nativeSendChat(JNIEnv* env, jobjec
                 cleanResponse = cleanResponse.substr(start);
             }
             if (!cleanResponse.empty()) {
-                argos::ttsSpeak(cleanResponse);
+                argos::ttsSpeakJava(cleanResponse);
             }
         }
     }).detach();

@@ -81,6 +81,17 @@ public class FloatingRobotService extends Service {
     // Guard: ignore JS position updates until Java has set the initial
     // centered position, otherwise the robot flashes at (0,0) = top-left.
     private boolean positionInitialized = false;
+
+    // ── Freeze auto-restart ──
+    // If the WebView reports no movement for a long stretch (a wedged JS
+    // animation loop), reload the page so Argos fully resets instead of
+    // sitting frozen. Tracks the last position and when it last changed.
+    private float m_lastPosX = -1f, m_lastPosY = -1f;
+    private long m_lastMoveTime = System.currentTimeMillis();
+    private final android.os.Handler m_freezeHandler =
+        new android.os.Handler(android.os.Looper.getMainLooper());
+    private Runnable m_freezeCheck;
+    private static final long FREEZE_TIMEOUT_MS = 35000;
     // Keyboard detection
     private boolean keyboardVisible = false;
     private float savedRobotY = 0;
@@ -110,7 +121,11 @@ public class FloatingRobotService extends Service {
     // an interrupted request doesn't clobber a newer one.
     private int pipelineGeneration = 0;
     private long lastTapTime = 0;
-    private static final int DOUBLE_TAP_THRESHOLD_MS = 300;
+    // Double-tap window. 300ms was tight enough that a slightly slower first
+    // attempt registered as two single taps (toggling the chat bubble) instead
+    // of starting voice recording — which is why the first try appeared to do
+    // nothing while the second worked. 450ms is a much more forgiving window.
+    private static final int DOUBLE_TAP_THRESHOLD_MS = 450;
     private static final int SILENCE_THRESHOLD = 800; // amplitude threshold for silence
     private static final int SILENCE_DURATION_MS = 4000; // 4 seconds of silence auto-stops recording
     private static final int MAX_RECORDING_DURATION_MS = 30000; // max 30 seconds
@@ -318,9 +333,20 @@ public class FloatingRobotService extends Service {
                 // Grant all requested permissions (camera, etc.)
                 request.grant(request.getResources());
             }
+
+            // Surface the page's console output in logcat (tag "ArgosJS").
+            // Setting a WebChromeClient suppresses the default console
+            // logging, so without this the robot's JS diagnostics are invisible.
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage cm) {
+                android.util.Log.i("ArgosJS", cm.message() + " @" + cm.lineNumber());
+                return true;
+            }
         });
         // Load the Three.js robot scene from assets
         robotWebView.loadUrl("file:///android_asset/argos_robot.html");
+        // Watch for a wedged animation loop and reload the page if needed.
+        startFreezeWatchdog();
 
         layoutType = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
@@ -500,8 +526,8 @@ public class FloatingRobotService extends Service {
             if (isDragging) return;
 
             // Update window size to match robot
-            final int winW = (int) (size * 1.4f);
-            final int winH = (int) (size * 1.3f);
+            final int winW = (int) (size * 2.0f);
+            final int winH = (int) (size * 1.7f);
 
             android.os.Handler handler = new android.os.Handler(getMainLooper());
             handler.post(() -> {
@@ -909,6 +935,62 @@ public class FloatingRobotService extends Service {
         });
     }
 
+    // Strip [TOOL:...] tags so only natural-language text is shown or spoken.
+    // Handles three cases:
+    //   1. EXPRSEQ carries a nested JSON array — stripped first (non-greedy to
+    //      the closing "]]"), otherwise the leftover JSON would be read aloud.
+    //   2. Complete [TOOL:...] tags.
+    //   3. Bare/unclosed tag syntax the model sometimes emits without brackets
+    //      (e.g. "TOOL:EXPR:HAPPY") — otherwise TTS literally says
+    //      "TOOL colon EXPR colon HAPPY".
+    private String stripToolTags(String text) {
+        if (text == null) return "";
+        String t = text;
+        // Strip chat role labels ("You:", "User:", "Argos:", "Assistant:").
+        // These come from the conversation-bubble formatting and were being
+        // spoken aloud literally as "You colon …". Must happen before the
+        // whitespace collapse below, which destroys the line anchors.
+        t = t.replaceAll("(?im)^\\s*(you|user|argos|assistant|system)\\s*:\\s*", " ");
+        t = t.replaceAll("(?i)\\b(you|user|argos|assistant|system)\\s*:\\s*", " ");
+        return t
+            .replaceAll("(?s)\\[TOOL:EXPRSEQ:\\[.*?\\]\\]", " ")
+            .replaceAll("\\[TOOL:[^\\]]*\\]", " ")
+            .replaceAll("(?i)\\[?TOOL:[^\\]\\s]*\\]?", " ")
+            // Residual tag tokens that lost their brackets, e.g. "EXPR:HAPPY".
+            // This is the specific case that made TTS say "EXPR colon HAPPY".
+            .replaceAll("\\b[A-Z][A-Z0-9_]{1,}\\s*:\\s*[A-Za-z0-9_./\\-]*", " ")
+            // Lone tag keywords (in case a tag was split across the text)
+            .replaceAll("(?i)\\b(EXPRSEQ|EXPR|TOOL|HAND|EXPRSEQ)\\b", " ")
+            // Stray brackets left over from malformed tags
+            .replaceAll("[\\[\\]{}]", " ")
+            .replaceAll("\\s+", " ")
+            .trim();
+    }
+
+    // Pick a natural hand gesture for the reply's expression so the neon hands
+    // always match the face, even when the AI omits a [TOOL:HAND:...] tag.
+    private String defaultGestureForReply(String reply) {
+        if (reply == null) return "REST";
+        java.util.regex.Matcher m =
+            java.util.regex.Pattern.compile("\\[TOOL:EXPR:([^\\]]+)\\]").matcher(reply);
+        if (!m.find()) return "REST";
+        switch (m.group(1).trim().toUpperCase()) {
+            case "HAPPY": return "WAVE";
+            case "LAUGHING": return "BELLY";
+            case "LOVE": return "HEART";
+            case "EXCITED": case "STAR_EYES": return "RAISED";
+            case "SURPRISED": case "HIDING_EYES": return "CHEEKS";
+            case "SCARED": return "TREMBLE";
+            case "SAD": case "SLEEPING": return "DOWN";
+            case "ANGRY": return "FIST";
+            case "CONFUSED": return "SCRATCH";
+            case "THINKING": return "THINK";
+            case "WINK": return "PEACE";
+            case "DIZZY": return "SHRUG";
+            default: return "REST";
+        }
+    }
+
     // Called from C++ via JNI
     public void onChatResponse(final String response) {
         android.os.Handler handler = new android.os.Handler(getMainLooper());
@@ -918,16 +1000,9 @@ public class FloatingRobotService extends Service {
             // Notify JS: robot is talking
             if (robotWebView != null) {
                 robotWebView.evaluateJavascript("if(window.ArgosJS){ArgosJS.setThinking(false);ArgosJS.setTalking(true);}", null);
-                // Stop talking state after 5 seconds
-                final android.os.Handler delayHandler = new android.os.Handler(getMainLooper());
-                delayHandler.postDelayed(() -> {
-                    if (robotWebView != null) {
-                        robotWebView.evaluateJavascript("if(window.ArgosJS){ArgosJS.setTalking(false);}", null);
-                    }
-                }, 5000);
             }
             // Strip [TOOL:...] tags from displayed response
-            String clean = response.replaceAll("\\[TOOL:[^\\]]*\\]", "").trim();
+            String clean = stripToolTags(response);
             // Execute any tool commands in the response
             executeToolTags(response);
             // Fallback: if no EXPR tag was found, set NEUTRAL so robot always reacts
@@ -937,11 +1012,12 @@ public class FloatingRobotService extends Service {
                         "if(window.ArgosJS){ArgosJS.setExpression('NEUTRAL');}", null);
                 }
             }
-            // Fallback: if no HAND tag was found, set REST so hands always show
+            // Fallback: if no HAND tag was found, pick a gesture that matches
+            // the reply's expression so the hands always react.
             if (!response.contains("[TOOL:HAND:")) {
                 if (robotWebView != null) {
                     robotWebView.evaluateJavascript(
-                        "if(window.ArgosJS){ArgosJS.setHandGesture('REST');}", null);
+                        "if(window.ArgosJS){ArgosJS.setHandGesture('" + defaultGestureForReply(response) + "');}", null);
                 }
             }
             // Remove tool status views
@@ -999,6 +1075,36 @@ public class FloatingRobotService extends Service {
                 }
                 if (!updated) {
                     addMessage("Argos: " + clean, Color.rgb(100, 200, 255));
+                }
+            }
+
+            // TTS — speak the AI reply aloud so the user hears it.
+            // The UtteranceProgressListener (set up in initTTS) calls
+            // onVoiceTtsFinished() when speech completes, which resets the
+            // robot to idle. If TTS is unavailable/suppressed, we clear the
+            // talking state manually so the robot doesn't freeze.
+            if (!clean.isEmpty()) {
+                String ttsResult = ttsSpeakJava(clean);
+                // If TTS didn't actually start, reset talking state now
+                if (ttsResult == null || !ttsResult.contains("\"status\":\"speaking\"")) {
+                    if (robotWebView != null) {
+                        final android.os.Handler delayHandler = new android.os.Handler(getMainLooper());
+                        delayHandler.postDelayed(() -> {
+                            if (robotWebView != null) {
+                                robotWebView.evaluateJavascript("if(window.ArgosJS){ArgosJS.setTalking(false);}", null);
+                            }
+                        }, 2000);
+                    }
+                }
+            } else {
+                // No spoken text (tool-only response) — clear talking state
+                if (robotWebView != null) {
+                    final android.os.Handler delayHandler = new android.os.Handler(getMainLooper());
+                    delayHandler.postDelayed(() -> {
+                        if (robotWebView != null) {
+                            robotWebView.evaluateJavascript("if(window.ArgosJS){ArgosJS.setTalking(false);}", null);
+                        }
+                    }, 1000);
                 }
             }
         });
@@ -1090,7 +1196,15 @@ public class FloatingRobotService extends Service {
                     if (serviceDestroyed || windowManager == null || robotWebView != null) return;
                     try {
                         createFloatingWindow();
-                        startThoughtTimer();
+                        // Warm the TTS engine now instead of lazily on the first
+                        // reply. TextToSpeech loads asynchronously and can take
+                        // well over the old 500ms wait — which is exactly why the
+                        // FIRST spoken reply was silent while the second worked.
+                        initTTS();
+                        // Screen-context "thought" generation is disabled: it
+                        // periodically read the current app/screen and generated
+                        // a comment, which was a recurring source of lag.
+                        // startThoughtTimer();
                     } catch (RuntimeException e) {
                         android.util.Log.e("ArgosService", "Could not create overlay", e);
                         stopSelf();
@@ -1184,8 +1298,11 @@ public class FloatingRobotService extends Service {
 
     public void onAppChanged(final String appLabel) {
         awarenessHandler.post(() -> {
-            // Trigger dance on user activity
-            robotOnUserActivity();
+            // Screen-awareness dance trigger REMOVED. This fired on every app
+            // switch and pushed Argos into the DANCING state, which is held for
+            // ACTIVITY_TIMEOUT (30s) and suppresses roaming — the "Argos stops
+            // for ~30s" bug. App changes no longer hijack the robot.
+            // robotOnUserActivity();
 
             // Don't show awareness while chat bubble is open, in standby mode,
             // or if the screen is off (phone asleep)
@@ -1462,10 +1579,13 @@ public class FloatingRobotService extends Service {
                 thoughtParams.gravity = Gravity.TOP | Gravity.START;
             }
 
-            thoughtBubble.setText("💬 " + text);
+            // Clean for both display and speech — the raw thought can carry
+            // role labels / tool tags that should never be shown or spoken.
+            final String displayText = stripToolTags(text);
+            thoughtBubble.setText("💬 " + displayText);
 
             // Auto-TTS: speak the thought aloud (like desktop)
-            ttsSpeakJava(text);
+            ttsSpeakJava(displayText);
 
             // Position above the robot — uses the same positioning logic as
             // the speech bubble so it stays glued to the robot's head.
@@ -1794,6 +1914,33 @@ public class FloatingRobotService extends Service {
 
     private android.speech.tts.TextToSpeech m_tts = null;
     private boolean m_ttsReady = false;
+    // Text of the utterance currently being spoken — used by onRangeStart() to
+    // map the reported [start,end) character range back to the spoken word.
+    private String m_lastSpokenText = null;
+    // Text queued while the TTS engine is still initialising (common on the
+    // very first use) — spoken from onInit() as soon as it is ready.
+    private String m_pendingSpeech = null;
+    // Safety net: some TTS engines never call onDone/onError. Without this the
+    // robot would stay in the talking state forever and stop roaming.
+    private final android.os.Handler ttsSafetyHandler =
+        new android.os.Handler(android.os.Looper.getMainLooper());
+    private Runnable ttsSafetyRunnable = null;
+
+    // Re-armable fallback that finishes the talking state if the TTS engine
+    // goes quiet without reporting completion.
+    private void scheduleTtsCompletionFallback(final int textLen) {
+        if (ttsSafetyRunnable != null) ttsSafetyHandler.removeCallbacks(ttsSafetyRunnable);
+        // ~90 ms per character (well above normal speech rate) + 4 s slack
+        final long delay = Math.min(180000L, 4000L + textLen * 90L);
+        ttsSafetyRunnable = () -> {
+            if (m_tts != null && m_tts.isSpeaking()) {
+                scheduleTtsCompletionFallback(textLen); // still talking — check again
+                return;
+            }
+            onVoiceTtsFinished();
+        };
+        ttsSafetyHandler.postDelayed(ttsSafetyRunnable, delay);
+    }
 
     // Record audio from microphone, returns 16-bit PCM at 16kHz mono as byte[]
     public byte[] recordAudioJava(int durationSeconds) {
@@ -1889,8 +2036,41 @@ public class FloatingRobotService extends Service {
                             android.os.Handler h = new android.os.Handler(getMainLooper());
                             h.post(() -> onVoiceTtsFinished());
                         }
+
+                        // Word-by-word timing (API 26+, Google TTS English).
+                        // Feeds each spoken word to the 3D robot so its hand
+                        // gestures are timed to the actual speech instead of a
+                        // fixed loop. Engines that don't supply ranges simply
+                        // never call this — the robot then keeps its gesture.
+                        @Override
+                        public void onRangeStart(String utteranceId, int start, int end, int frame) {
+                            if (robotWebView == null) return;
+                            final String word = (m_lastSpokenText != null &&
+                                    start >= 0 && end <= m_lastSpokenText.length() && start < end)
+                                    ? m_lastSpokenText.substring(start, end) : "";
+                            final int s = start, e = end;
+                            android.os.Handler h = new android.os.Handler(getMainLooper());
+                            h.post(() -> {
+                                if (robotWebView == null) return;
+                                robotWebView.evaluateJavascript(
+                                    "if(window.ArgosJS&&ArgosJS.onSpeakWord){ArgosJS.onSpeakWord(" +
+                                    s + "," + e + ",'" + word.replace("'", "\\'") + "');}", null);
+                            });
+                        }
                     });
                     android.util.Log.i("ArgosTTS", "TTS initialized successfully");
+                    // Flush any reply that was queued while the engine was
+                    // loading — this is what makes the FIRST spoken reply work.
+                    if (m_pendingSpeech != null) {
+                        final String pending = m_pendingSpeech;
+                        m_pendingSpeech = null;
+                        try {
+                            m_lastSpokenText = pending;
+                            m_tts.speak(pending, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null,
+                                "argos_tts_pending_" + System.currentTimeMillis());
+                            scheduleTtsCompletionFallback(pending.length());
+                        } catch (Exception e) {}
+                    }
                 } else {
                     android.util.Log.e("ArgosTTS", "TTS init failed with status: " + status);
                 }
@@ -1906,6 +2086,11 @@ public class FloatingRobotService extends Service {
     // wake word detection when the voice pipeline is actually active, so
     // non-voice TTS (reminders, etc.) doesn't spuriously reset pipeline state.
     private void onVoiceTtsFinished() {
+        // Cancel the completion fallback — speech really did finish.
+        if (ttsSafetyRunnable != null) {
+            ttsSafetyHandler.removeCallbacks(ttsSafetyRunnable);
+            ttsSafetyRunnable = null;
+        }
         if (robotWebView != null) {
             robotWebView.evaluateJavascript(
                 "if(window.ArgosJS){ArgosJS.setTalking(false);}", null);
@@ -1937,9 +2122,9 @@ public class FloatingRobotService extends Service {
             // execution (e.g. [TOOL:EXPR:HAPPY], [TOOL:OPEN:whatsapp]) and
             // should never be spoken aloud. Only the natural-language reply
             // portion of the AI response should be read by TTS.
-            String cleanText = text.replaceAll("\\[TOOL:[^\\]]*\\]", "").trim();
-            // Collapse whitespace left behind by removed tags
-            cleanText = cleanText.replaceAll("\\s+", " ").trim();
+            // stripToolTags() also removes nested EXPRSEQ arrays and bare
+            // "TOOL:..." syntax, so nothing with a colon leaks into speech.
+            String cleanText = stripToolTags(text);
             if (cleanText.isEmpty()) {
                 // The response was entirely tool tags with no spoken text
                 return "{\"status\":\"skipped\",\"reason\":\"no_spoken_text\"}";
@@ -1950,10 +2135,21 @@ public class FloatingRobotService extends Service {
                 try { Thread.sleep(500); } catch (Exception e) {}
             }
             if (m_tts == null || !m_ttsReady) {
-                return "{\"error\":\"TTS not ready\"}";
+                // Engine still loading — this is the common FIRST-use case and
+                // was why the first reply came out silent while the second
+                // worked. Queue the text so onInit() speaks it the moment the
+                // engine is ready, and report "speaking" so the caller does not
+                // tear the voice pipeline down.
+                m_pendingSpeech = cleanText;
+                m_lastSpokenText = cleanText;
+                scheduleTtsCompletionFallback(cleanText.length());
+                return "{\"status\":\"speaking\",\"text\":\"(queued)\"}";
             }
+            m_lastSpokenText = cleanText;
             int result = m_tts.speak(cleanText, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "argos_tts_" + System.currentTimeMillis());
             if (result == android.speech.tts.TextToSpeech.SUCCESS) {
+                // Arm the completion fallback in case the engine never reports done
+                scheduleTtsCompletionFallback(cleanText.length());
                 return "{\"status\":\"speaking\",\"text\":\"" + cleanText.replace("\"", "\\\"") + "\"}";
             }
             return "{\"error\":\"TTS speak failed\"}";
@@ -3189,19 +3385,6 @@ public class FloatingRobotService extends Service {
             hideLongPressMenu();
             return;
         }
-        // If tasks overlay is open, close it
-        if (tasksOverlay != null && tasksOverlay.getParent() != null) {
-            hideTasksOverlay();
-            return;
-        }
-        if (privacyOverlay != null && privacyOverlay.getParent() != null) {
-            hidePrivacyOverlay();
-            return;
-        }
-if (notesOverlay != null && notesOverlay.getParent() != null) {
-            hideNotesOverlay();
-            return;
-        }
         if (settingsOverlay != null && settingsOverlay.getParent() != null) {
             hideSettingsOverlay();
             return;
@@ -3225,21 +3408,14 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
         btnBg.setCornerRadius(14f);
         btnBg.setStroke(2, Color.rgb(0, 229, 255));
 
-        android.graphics.drawable.GradientDrawable btnBgGreen = new android.graphics.drawable.GradientDrawable();
-        btnBgGreen.setColor(Color.argb(255, 20, 22, 35));
-        btnBgGreen.setCornerRadius(14f);
-        btnBgGreen.setStroke(2, Color.rgb(0, 255, 136));
-
-        // Button dimensions — smaller to fit 2 columns comfortably
+        // Button dimensions
         int btnW = (int) (screenWidth * 0.20);
         int btnH = (int) (screenWidth * 0.14);
         if (btnW < 150) btnW = 150;
         if (btnH < 110) btnH = 110;
         int gap = 16;
 
-        float density = getResources().getDisplayMetrics().density;
-
-        // ── TOP ROW: Privacy (left) + Settings (right) ──
+        // ── ROW: Settings (left) + Standby (right) ──
         LinearLayout topRow = new LinearLayout(this);
         topRow.setOrientation(LinearLayout.HORIZONTAL);
         topRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -3247,7 +3423,7 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         topRowParams.setMargins(0, 0, 0, gap);
 
-        // Settings button (top-left) — replaces old Privacy button
+        // Settings button (left)
         LinearLayout settingsBtn = createRadialButton("⚙", "Settings", btnBg);
         settingsBtn.setOnClickListener(v -> {
             hideLongPressMenu();
@@ -3257,17 +3433,7 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
         settingsBtnParams.setMargins(0, 0, gap / 2, 0);
         topRow.addView(settingsBtn, settingsBtnParams);
 
-        menuContainer.addView(topRow, topRowParams);
-
-        // ── BOTTOM ROW: Standby (left) + Schedule (right) ──
-        LinearLayout bottomRow = new LinearLayout(this);
-        bottomRow.setOrientation(LinearLayout.HORIZONTAL);
-        bottomRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams bottomRowParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        bottomRowParams.setMargins(0, gap, 0, gap);
-
-        // Standby button (bottom-left)
+        // Standby button (right)
         LinearLayout standbyBtn = createRadialButton(
             standbyMode ? "▶" : "⏸",
             standbyMode ? "Activate" : "Standby",
@@ -3285,50 +3451,10 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
             hideLongPressMenu();
         });
         LinearLayout.LayoutParams standbyBtnParams = new LinearLayout.LayoutParams(btnW, btnH);
-        standbyBtnParams.setMargins(0, 0, gap / 2, 0);
-        bottomRow.addView(standbyBtn, standbyBtnParams);
+        standbyBtnParams.setMargins(gap / 2, 0, 0, 0);
+        topRow.addView(standbyBtn, standbyBtnParams);
 
-        // Schedule button (bottom-right)
-        LinearLayout scheduleBtn = createRadialButton("📋", "Schedule", btnBg);
-        scheduleBtn.setOnClickListener(v -> {
-            hideLongPressMenu();
-            showTasksOverlay();
-        });
-        LinearLayout.LayoutParams scheduleBtnParams = new LinearLayout.LayoutParams(btnW, btnH);
-        scheduleBtnParams.setMargins(gap / 2, 0, 0, 0);
-        bottomRow.addView(scheduleBtn, scheduleBtnParams);
-
-        menuContainer.addView(bottomRow, bottomRowParams);
-
-        // ── NOTES ROW: Notes (left) + Open Folder (right) ──
-        LinearLayout notesRow = new LinearLayout(this);
-        notesRow.setOrientation(LinearLayout.HORIZONTAL);
-        notesRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams notesRowParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        notesRowParams.setMargins(0, 0, 0, gap);
-
-        // Notes button — shows files created by Argos AI
-        LinearLayout notesBtn = createRadialButton("📝", "Notes", btnBgGreen);
-        notesBtn.setOnClickListener(v -> {
-            hideLongPressMenu();
-            showNotesOverlay();
-        });
-        LinearLayout.LayoutParams notesBtnParams = new LinearLayout.LayoutParams(btnW, btnH);
-        notesBtnParams.setMargins(0, 0, gap / 2, 0);
-        notesRow.addView(notesBtn, notesBtnParams);
-
-        // Open Folder button — opens the Argos folder in a file manager
-        LinearLayout openFolderBtn = createRadialButton("📂", "Open\nFolder", btnBg);
-        openFolderBtn.setOnClickListener(v -> {
-            hideLongPressMenu();
-            openArgosFolder();
-        });
-        LinearLayout.LayoutParams openFolderBtnParams = new LinearLayout.LayoutParams(btnW, btnH);
-        openFolderBtnParams.setMargins(gap / 2, 0, 0, 0);
-        notesRow.addView(openFolderBtn, openFolderBtnParams);
-
-        menuContainer.addView(notesRow, notesRowParams);
+        menuContainer.addView(topRow, topRowParams);
 
         // ── EXIT button (bottom-center, full width) ──
         TextView exitBtn = new TextView(this);
@@ -3356,7 +3482,7 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
 
         // Container size — wrap content
         int containerW = btnW * 2 + gap + 40; // 2 buttons + gap + padding
-        int containerH = btnH * 3 + gap * 3 + 80; // 3 rows + gaps + exit + padding
+        int containerH = btnH + gap + 60; // 1 row + exit + padding
 
         // Layout params — position centered on robot
         longPressMenuParams = new WindowManager.LayoutParams(
@@ -3518,8 +3644,8 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
                         robotScreenY = screenY;
                         if (robotParams != null && robotWebView != null) {
                             float size = robotSize * currentScale;
-                            int winW = (int) (size * 1.4f);
-                            int winH = (int) (size * 1.3f);
+                            int winW = (int) (size * 2.0f);
+                            int winH = (int) (size * 1.7f);
                             robotParams.x = (int) Math.max(0, Math.min(screenWidth - winW, screenX - winW / 2.0f));
                             robotParams.y = (int) Math.max(0, Math.min(screenHeight - winH, screenY - winH / 2.0f));
                             try {
@@ -4849,6 +4975,30 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
         }
     }
 
+    // ── Freeze auto-restart ──
+    // Runs every 10s. If the WebView has reported no movement for
+    // FREEZE_TIMEOUT_MS while Argos is idle (not talking, not in standby, not
+    // being dragged), the JS animation loop is wedged — reload the page so the
+    // robot fully resets rather than sitting frozen forever.
+    private void startFreezeWatchdog() {
+        m_freezeCheck = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    boolean busy = voicePipelineActive || standbyMode || isDragging || !screenOn;
+                    if (!busy && robotWebView != null &&
+                        System.currentTimeMillis() - m_lastMoveTime > FREEZE_TIMEOUT_MS) {
+                        android.util.Log.w("Argos", "Robot frozen — reloading WebView to reset");
+                        m_lastMoveTime = System.currentTimeMillis();
+                        robotWebView.reload();
+                    }
+                } catch (Exception e) {}
+                m_freezeHandler.postDelayed(this, 10000);
+            }
+        };
+        m_freezeHandler.postDelayed(m_freezeCheck, 10000);
+    }
+
     // Start a watchdog timer that resets the robot if the voice pipeline
     // (thinking → backend response) takes too long. This prevents the 3D
     // robot from being permanently frozen in the thinking pose when the
@@ -5300,7 +5450,8 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
                             resumeWakeWordDetection();
                             return;
                         }
-                        String reply = json.optString("reply", "");
+                        String reply = json.optString("response", "");
+                        if (reply.isEmpty()) reply = json.optString("reply", "");
                         if (reply.isEmpty()) {
                             // Backend returned 2xx but no reply — surface it so the user
                             // isn't left waiting in silence.
@@ -5348,7 +5499,7 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
     // This mirrors what onChatResponse does for the text-chat path.
     private void displayAndSpeakVoiceReply(String rawReply, String userMessage) {
         // Strip [TOOL:...] tags from displayed response
-        String clean = rawReply.replaceAll("\\[TOOL:[^\\]]*\\]", "").trim();
+        String clean = stripToolTags(rawReply);
         // Collapse whitespace left behind by removed tags
         clean = clean.replaceAll("\\s+", " ").trim();
 
@@ -5362,11 +5513,12 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
                     "if(window.ArgosJS){ArgosJS.setExpression('NEUTRAL');}", null);
             }
         }
-        // Fallback: if no HAND tag was found, set REST so hands always show
+        // Fallback: if no HAND tag was found, pick a gesture that matches the
+        // reply's expression so the hands always react.
         if (!rawReply.contains("[TOOL:HAND:")) {
             if (robotWebView != null) {
                 robotWebView.evaluateJavascript(
-                    "if(window.ArgosJS){ArgosJS.setHandGesture('REST');}", null);
+                    "if(window.ArgosJS){ArgosJS.setHandGesture('" + defaultGestureForReply(rawReply) + "');}", null);
             }
         }
 
@@ -5565,7 +5717,8 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
                             return;
                         }
                         String transcribed = json.optString("transcribed", "");
-                        String reply = json.optString("reply", "");
+                        String reply = json.optString("response", "");
+                        if (reply.isEmpty()) reply = json.optString("reply", "");
 
                         if (!transcribed.isEmpty()) {
                             addMessage("You: " + transcribed, Color.rgb(200, 200, 210));
@@ -5931,11 +6084,24 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
             });
         }
 
+        // Robot-side diagnostics → logcat (tag "ArgosDiag"). More reliable than
+        // WebView console logging, which a custom WebChromeClient can suppress.
+        @JavascriptInterface
+        public void onDiag(String msg) {
+            android.util.Log.i("ArgosDiag", msg);
+        }
+
         @JavascriptInterface
         public void onRobotPosition(float x, float y, float size) {
             // Ignore position updates until the initial centered position has
             // been set — otherwise the robot jumps to (0,0) = top-left corner.
             if (!positionInitialized) return;
+            // Freeze detection: any real movement resets the timer.
+            if (Math.abs(x - m_lastPosX) > 2f || Math.abs(y - m_lastPosY) > 2f) {
+                m_lastPosX = x;
+                m_lastPosY = y;
+                m_lastMoveTime = System.currentTimeMillis();
+            }
             robotScreenX = x;
             // Clamp Y to stay above keyboard if keyboard is visible
             if (keyboardVisible && keyboardTopY > 0) {
@@ -5945,8 +6111,8 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
             robotScreenY = y;
             // size from JS is effective size (includes 3D depth scale)
             currentScale = size / robotSize;
-            final int winW = (int) (size * 1.4f);
-            final int winH = (int) (size * 1.3f);
+            final int winW = (int) (size * 2.0f);
+            final int winH = (int) (size * 1.7f);
             final float finalY = y;
             android.os.Handler handler = new android.os.Handler(getMainLooper());
             handler.post(() -> {
@@ -6020,8 +6186,8 @@ if (notesOverlay != null && notesOverlay.getParent() != null) {
                 robotScreenY = screenY;
                 if (robotParams != null && robotWebView != null) {
                     float size = robotSize * currentScale;
-                    int winW = (int) (size * 1.4f);
-                    int winH = (int) (size * 1.3f);
+                    int winW = (int) (size * 2.0f);
+                    int winH = (int) (size * 1.7f);
                     robotParams.x = (int) Math.max(0, Math.min(screenWidth - winW, screenX - winW / 2.0f));
                     robotParams.y = (int) Math.max(0, Math.min(screenHeight - winH, screenY - winH / 2.0f));
                     try {
