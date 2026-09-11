@@ -14,7 +14,13 @@ from typing import List, Optional
 
 import requests
 
-from app.config import LLM_API_BASE, LLM_API_KEY, LLM_MODEL, LLM_TIMEOUT_SECONDS
+from app.config import (
+    LLM_API_BASE,
+    LLM_API_KEY,
+    LLM_MODEL,
+    LLM_REASONING_EFFORT,
+    LLM_TIMEOUT_SECONDS,
+)
 from app.ai.prompt import SYSTEM_PROMPT, THOUGHT_SYSTEM_PROMPT
 
 
@@ -62,8 +68,12 @@ def _call_llm(messages: List[dict], max_tokens: int = 200, temperature: float = 
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "reasoning_effort": "none",
     }
+    # Only send reasoning_effort when configured — providers that don't support
+    # it (e.g. Groq) reject unknown fields. Set LLM_REASONING_EFFORT= (blank)
+    # in .env to omit it.
+    if LLM_REASONING_EFFORT:
+        payload["reasoning_effort"] = LLM_REASONING_EFFORT
 
     resp = requests.post(url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)
     resp.raise_for_status()

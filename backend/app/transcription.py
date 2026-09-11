@@ -1,25 +1,130 @@
 """
 Server-side speech-to-text for /api/voice.
 
-Uses AssemblyAI Sync STT API — sends audio in a single HTTP request
-and receives the transcript back in the same response (no polling).
-Powered by the Universal-3.5 Pro model.
+Two interchangeable providers, selected by STT_PROVIDER in .env:
 
-Audio must be 80ms-120s of 16-bit WAV/PCM. Short clips are padded
-with silence to clear AssemblyAI's 80ms minimum instead of failing.
+  "openai"     — any OpenAI-compatible /audio/transcriptions endpoint.
+                 One multipart POST with `file` + `model`, Bearer auth.
+                 Works with Groq Whisper, OpenAI Whisper, etc.
+
+  "assemblyai" — AssemblyAI. Tries the synchronous /transcribe endpoint first
+                 (single request, no polling); if that isn't available on the
+                 account it automatically falls back to the v2 upload + poll
+                 flow.
+
+Both return a plain transcript string, so /api/voice does not care which is
+in use.
 """
+
+import time
 
 import requests
 
-from app.config import STT_API_KEY, STT_MODEL, STT_TIMEOUT_SECONDS
+from app.config import (
+    STT_API_BASE,
+    STT_API_KEY,
+    STT_LANGUAGE,
+    STT_MODEL,
+    STT_PROVIDER,
+    STT_TIMEOUT_SECONDS,
+)
 
-# AssemblyAI Sync STT requires at least 80ms of audio.
-# At 16kHz mono 16-bit, 80ms = 1280 samples = 2560 bytes of PCM data.
+# AssemblyAI's sync endpoint requires at least 80ms of audio.
+# At 16kHz mono 16-bit that is 1280 samples = 2560 bytes of PCM data.
 _MIN_PCM_BYTES = 2560
 
 
+def transcribe_audio(audio_bytes: bytes, filename: str = "audio.wav") -> str:
+    if not STT_API_KEY:
+        raise RuntimeError(
+            "STT_API_KEY is not configured. Set it in your .env file "
+            "(or set LLM_API_KEY when using an OpenAI-compatible STT provider)."
+        )
+    if STT_PROVIDER == "assemblyai":
+        return _transcribe_assemblyai(audio_bytes, filename)
+    return _transcribe_openai(audio_bytes, filename)
+
+
+# ── OpenAI-compatible (Groq Whisper, OpenAI Whisper, …) ──
+
+def _transcribe_openai(audio_bytes: bytes, filename: str) -> str:
+    url = f"{STT_API_BASE.rstrip('/')}/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {STT_API_KEY}"}
+    files = {"file": (filename, audio_bytes, "audio/wav")}
+    data = {"model": STT_MODEL}
+    if STT_LANGUAGE:
+        data["language"] = STT_LANGUAGE
+
+    resp = requests.post(
+        url, headers=headers, files=files, data=data, timeout=STT_TIMEOUT_SECONDS
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Transcription failed ({resp.status_code}): {_error_detail(resp)}")
+
+    return (resp.json().get("text") or "").strip()
+
+
+# ── AssemblyAI ──
+
+def _transcribe_assemblyai(audio_bytes: bytes, filename: str) -> str:
+    audio_bytes = _pad_wav_if_too_short(audio_bytes)
+
+    base = STT_API_BASE.rstrip("/")
+    headers = {"Authorization": STT_API_KEY}
+
+    # 1) Synchronous endpoint — one request, no polling, lowest latency.
+    try:
+        resp = requests.post(
+            f"{base}/transcribe",
+            headers={**headers, "X-AAI-Model": STT_MODEL},
+            files={"audio": (filename, audio_bytes, "audio/wav")},
+            timeout=STT_TIMEOUT_SECONDS,
+        )
+        if resp.status_code < 400:
+            return (resp.json().get("text") or "").strip()
+        # 404/405 means the sync API isn't enabled for this account/plan —
+        # fall through to the v2 upload + poll flow.
+        if resp.status_code not in (404, 405):
+            raise RuntimeError(f"Transcription failed ({resp.status_code}): {_error_detail(resp)}")
+    except requests.RequestException as e:
+        raise RuntimeError(f"Transcription request failed: {e}")
+
+    # 2) v2 API — upload the audio, submit a job, poll for the result.
+    api_base = "https://api.assemblyai.com/v2"
+    upload = requests.post(
+        f"{api_base}/upload", headers=headers, data=audio_bytes, timeout=STT_TIMEOUT_SECONDS
+    )
+    if upload.status_code >= 400:
+        raise RuntimeError(f"Upload failed ({upload.status_code}): {_error_detail(upload)}")
+    upload_url = upload.json()["upload_url"]
+
+    payload = {"audio_url": upload_url}
+    if STT_LANGUAGE:
+        payload["language_code"] = STT_LANGUAGE
+    job = requests.post(f"{api_base}/transcript", headers=headers, json=payload, timeout=30)
+    if job.status_code >= 400:
+        raise RuntimeError(f"Transcription submit failed ({job.status_code}): {_error_detail(job)}")
+    transcript_id = job.json()["id"]
+
+    deadline = time.time() + STT_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        poll = requests.get(f"{api_base}/transcript/{transcript_id}", headers=headers, timeout=30)
+        poll.raise_for_status()
+        result = poll.json()
+        status = result.get("status")
+        if status == "completed":
+            return (result.get("text") or "").strip()
+        if status == "error":
+            raise RuntimeError(f"Transcription failed: {result.get('error', 'unknown')}")
+        time.sleep(0.5)
+
+    raise RuntimeError("Transcription timed out")
+
+
+# ── Helpers ──
+
 def _pad_wav_if_too_short(audio_bytes: bytes) -> bytes:
-    """Pad a WAV file with silence so it clears the 80ms minimum.
+    """Pad a PCM WAV with silence so it clears AssemblyAI's 80ms minimum.
 
     Only handles the standard 44-byte-header PCM WAV that Android sends
     (see FloatingRobotService.pcmToWav). Anything unrecognized is returned
@@ -36,42 +141,16 @@ def _pad_wav_if_too_short(audio_bytes: bytes) -> bytes:
 
     padding = b"\x00" * (_MIN_PCM_BYTES - data_size)
     padded = bytearray(audio_bytes + padding)
-
-    # Update RIFF chunk size (bytes 4-8) and data chunk size (bytes 40-44).
-    new_data_size = _MIN_PCM_BYTES
-    new_riff_size = 36 + new_data_size
+    new_riff_size = 36 + _MIN_PCM_BYTES
     padded[4:8] = new_riff_size.to_bytes(4, "little")
-    padded[40:44] = new_data_size.to_bytes(4, "little")
+    padded[40:44] = _MIN_PCM_BYTES.to_bytes(4, "little")
     return bytes(padded)
 
 
-def transcribe_audio(audio_bytes: bytes, filename: str = "audio.wav") -> str:
-    if not STT_API_KEY:
-        raise RuntimeError(
-            "STT_API_KEY is not configured. "
-            "Set it in your .env file before uploading voice audio."
-        )
-
-    audio_bytes = _pad_wav_if_too_short(audio_bytes)
-
-    url = "https://sync.assemblyai.com/transcribe"
-    headers = {
-        "Authorization": STT_API_KEY,
-        "X-AAI-Model": STT_MODEL,
-    }
-    files = {"audio": (filename, audio_bytes, "audio/wav")}
-
-    resp = requests.post(url, headers=headers, files=files, timeout=STT_TIMEOUT_SECONDS)
-    if resp.status_code >= 400:
-        # Surface AssemblyAI's machine-readable error_code when present.
-        detail = resp.text
-        try:
-            body = resp.json()
-            detail = body.get("message") or body.get("detail") or detail
-        except ValueError:
-            pass
-        raise RuntimeError(f"Transcription failed ({resp.status_code}): {detail}")
-
-    result = resp.json()
-    text = result.get("text", "")
-    return text.strip()
+def _error_detail(resp) -> str:
+    """Pull a readable message out of a provider error response."""
+    try:
+        body = resp.json()
+        return body.get("message") or body.get("detail") or body.get("error") or resp.text
+    except ValueError:
+        return resp.text

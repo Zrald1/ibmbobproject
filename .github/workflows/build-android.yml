@@ -28,13 +28,13 @@ jobs:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0 cmake;3.22.1 ndk;27.0.12077973'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.7'
+        uses: gradle/actions/setup-gradle@v4
 
+      # Debug build — no signing secrets needed. The release workflow
+      # (.github/workflows/release.yml) handles the signed tag builds.
       - name: Build Android APK (Debug)
         working-directory: android
-        run: gradle assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

@@ -7,22 +7,43 @@ android {
     compileSdk 36
     ndkVersion '27.0.12077973'
 
-    // Release signing config — uses env vars in CI, local keystore otherwise
+    // Release signing config.
+    //
+    // Credentials are NEVER committed to the repository. They are read from
+    // (in order):
+    //   1. Environment variables — for CI:
+    //        ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD,
+    //        ANDROID_KEY_ALIAS, ANDROID_KEY_ALIAS_PASSWORD
+    //   2. android/local.properties — git-ignored, for local builds:
+    //        argos.keystore=../app/argos-release.keystore
+    //        argos.keystorePassword=...
+    //        argos.keyAlias=argos-key
+    //        argos.keyAliasPassword=...
+    //
+    // If no credentials are configured, the release build falls back to the
+    // debug signing key (see buildTypes.release) so it still produces an APK.
     signingConfigs {
         release {
-            def keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
-            def keystorePwd = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-            def aliasPwd = System.getenv("ANDROID_KEY_ALIAS_PASSWORD")
-            if (keystorePath != null && file(keystorePath).exists()) {
+            def props = new Properties()
+            def propsFile = rootProject.file('local.properties')
+            if (propsFile.exists()) {
+                propsFile.withInputStream { props.load(it) }
+            }
+            def keystorePath = System.getenv("ANDROID_KEYSTORE_PATH") ?: props.getProperty('argos.keystore')
+            def keystorePwd = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: props.getProperty('argos.keystorePassword')
+            def alias = System.getenv("ANDROID_KEY_ALIAS") ?: props.getProperty('argos.keyAlias') ?: 'argos-key'
+            def aliasPwd = System.getenv("ANDROID_KEY_ALIAS_PASSWORD") ?: props.getProperty('argos.keyAliasPassword')
+
+            if (keystorePath != null && file(keystorePath).exists() && keystorePwd != null && aliasPwd != null) {
                 storeFile file(keystorePath)
                 storePassword keystorePwd
-                keyAlias 'argos-key'
+                keyAlias alias
                 keyPassword aliasPwd
             } else if (file('argos-release.keystore').exists()) {
-                storeFile file('argos-release.keystore')
-                storePassword 'argos2026release'
-                keyAlias 'argos-key'
-                keyPassword 'argos2026release'
+                println "WARNING: argos-release.keystore found but no signing credentials configured."
+                println "         Set ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS_PASSWORD, or add"
+                println "         argos.keystorePassword / argos.keyAliasPassword to android/local.properties."
+                println "         Falling back to the debug signing key."
             }
         }
     }
@@ -31,8 +52,8 @@ android {
         applicationId "com.example.argos"
         minSdk 24
         targetSdk 36
-        versionCode 31
-        versionName "3.33.0"
+        versionCode 1
+        versionName "1.0.0"
 
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'

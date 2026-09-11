@@ -30,8 +30,18 @@ __pycache__/
 # ── Secrets and credentials — NEVER commit ──
 *.env
 .env
+# Signing material must live OUTSIDE the repo (see android/local.properties,
+# which is also ignored). These rules are a safety net so it can never be
+# accidentally re-added.
 *.keystore
 *.jks
+*.p12
+*.pfx
+*.pem
+*.key
+signing/
+signing.properties
+keystore.properties
 gcp-service-account.json
 service-account.json
 *access*keys*.csv
@@ -47,3 +57,7 @@ argos_config.txt
 aria_*.txt
 imgui.ini
 *.tmp
+
+# Generated signing secret blob (never commit)
+argos-keystore.base64.txt
+*.base64.txt

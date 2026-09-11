@@ -1,5 +1,8 @@
 name: Release Builds
 
+# Triggered by pushing a version tag, e.g.
+#   git tag v3.34.0 && git push origin v3.34.0
+# or manually via "Run workflow".
 on:
   push:
     tags:
@@ -7,12 +10,28 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0)'
+        description: 'Release tag (e.g. v3.34.0)'
         required: true
-        default: 'v1.0.0'
+        default: 'v3.34.0'
 
 permissions:
   contents: write
+
+# ── Required repository secrets ──────────────────────────────────────────
+# Settings → Secrets and variables → Actions → New repository secret
+#
+#   ANDROID_KEYSTORE_BASE64     base64 of the release keystore (.keystore file)
+#   ANDROID_KEYSTORE_PASSWORD   keystore password
+#   ANDROID_KEY_ALIAS           key alias (e.g. argos-key)          [optional]
+#   ANDROID_KEY_ALIAS_PASSWORD  key password
+#
+#   GOOGLE_PLAY_SERVICE_ACCOUNT Play service-account JSON (optional — the
+#                               Play upload step is skipped when absent)
+#
+# Generate ANDROID_KEYSTORE_BASE64 (one line, no wrapping):
+#   Linux/macOS : base64 -w0 argos-release.keystore
+#   Windows PS  : [Convert]::ToBase64String([IO.File]::ReadAllBytes("argos-release.keystore"))
+# ─────────────────────────────────────────────────────────────────────────
 
 jobs:
   build-android:
@@ -34,32 +53,51 @@ jobs:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0 cmake;3.22.1 ndk;27.0.12077973'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.7'
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Decode release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/argos-release.keystore
-          echo "Keystore decoded: $(ls -la android/app/argos-release.keystore)"
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is not set."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/signing"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing/argos-release.keystore"
+          echo "Keystore written: $(wc -c < "$RUNNER_TEMP/signing/argos-release.keystore") bytes"
 
       - name: Build Android APK (Release)
         working-directory: android
         env:
-          ANDROID_KEYSTORE_PATH: app/argos-release.keystore
+          # Absolute path — app/build.gradle resolves it with file(), which is
+          # relative to the app module dir, so a relative path here would miss.
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/signing/argos-release.keystore
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'argos-key' }}
           ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
-        run: gradle assembleRelease --no-daemon
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Build Android AAB (Release)
         working-directory: android
         env:
-          ANDROID_KEYSTORE_PATH: app/argos-release.keystore
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/signing/argos-release.keystore
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'argos-key' }}
           ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
-        run: gradle bundleRelease --no-daemon
+        run: ./gradlew bundleRelease --no-daemon --stacktrace
 
-      - name: Rename APK and AAB
+      - name: Verify the APK is release-signed
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME"/build-tools/36.0.0/apksigner verify --print-certs "$APK"
+          # Fail the build if it fell back to the debug key
+          if "$ANDROID_HOME"/build-tools/36.0.0/apksigner verify --print-certs "$APK" | grep -q "CN=Android Debug"; then
+            echo "::error::APK was signed with the DEBUG key — signing secrets are wrong."
+            exit 1
+          fi
+
+      - name: Rename artifacts
         run: |
           cp android/app/build/outputs/apk/release/app-release.apk argos-android-release.apk
           cp android/app/build/outputs/bundle/release/app-release.aab argos-android-release.aab
@@ -77,6 +115,10 @@ jobs:
           name: argos-android-release-aab
           path: argos-android-release.aab
           retention-days: 90
+
+      - name: Clean up keystore
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/signing"
 
   release:
     needs: [build-android]
@@ -96,20 +138,13 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download Android APK artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: argos-android-release-apk
-          path: artifacts
-
-      - name: Download Android AAB artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: argos-android-release-aab
           path: artifacts
 
       - name: List artifacts
-        run: ls -la artifacts/
+        run: ls -laR artifacts/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -120,88 +155,56 @@ jobs:
             # Argos ${{ steps.tag.outputs.tag }}
 
             ## Downloads
-            - **Android APK**: `argos-android-release.apk` — sideload on your phone (enable "Install from unknown sources")
-            - **Android AAB**: `argos-android-release.aab` — Google Play Store bundle
+            - **Android APK** — `argos-android-release.apk` (sideload on your phone)
+            - **Android AAB** — `argos-android-release.aab` (Google Play bundle)
 
-            ## What's New in v3.33.0
-
-            ### 3D Redesign — Circular Robot + Modern Articulated Hands
-            - **NEW**: Circular spherical head — the robot's head is now a smooth sphere instead of a box
-              - Clean circular silhouette from every angle
-              - Modern MeshPhysicalMaterial with clearcoat gloss and metalness for a premium robotic shell
-              - Subtle wireframe edge glow replaces sharp box edges
-              - Eyes, mouth, and back panel reprojected onto the curved sphere surface
-              - Circular back panel with ring glow and repositioned camera lens + antenna
-            - **NEW**: Modern articulated hands — complete hand rebuild
-              - 4 fingers + thumb (up from 3 box fingers) with anatomical proportions
-              - Capsule phalanges (cylinder + sphere caps) for smooth rounded finger segments
-              - Knuckle joint spheres at each finger joint for articulation detail
-              - Rounded sphere palm (replaces flat box palm)
-              - MeshPhongMaterial with emissive glow for a modern neon look
-            - **NEW**: Finger curl animation — all 17 gestures now drive per-finger curling
-              - Each finger has proximal + distal joint groups that rotate independently
-              - Anatomical DIP/PIP joint ratios for natural-looking finger bending
-              - Smooth interpolation (8x/second lerp) for natural motion
-              - Gesture-specific curl: FIST (all curled), POINT (index extended), PEACE (V sign), THUMBS_UP (thumb up), OPEN (all extended), etc.
-
-            ### Voice Pipeline Freeze Fixes
-            - **FIX**: 3D robot no longer freezes during voice chat
-              - Removed premature `robotSetState("idle")` that was overriding the talking state immediately after `displayAndSpeakVoiceReply()`
-              - Robot now stays in talking state until TTS actually finishes
-            - **FIX**: Talking state now tied to actual TTS completion via UtteranceProgressListener
-              - Replaces the fixed 5-second timeout that was clearing the talking animation early/late
-              - onDone/onError callbacks reset the robot to idle exactly when speech finishes
-            - **FIX**: Client-side watchdog timeout (45s) for voice pipeline thinking state
-              - Prevents permanent freeze if the backend hangs or is slow
-              - Resets robot to idle and informs the user
-            - **FIX**: Non-voice TTS (reminders, thought bubbles) no longer interferes with voice pipeline state
-
-            ### Backend Fixes
-            - **FIX**: `chat_with_llm` now returns `Err` on HTTP errors instead of `Ok` with an error string
-              - Previously a 503/500/429 from the primary LLM was returned as `Ok(("[LLM error: 503]", ...))`
-              - This skipped provider fallback and spoke the error string to the user
-              - Now returns `Err`, so the fallback provider is tried, and if all fail, a proper error message is returned
-            - **FIX**: Unescaped double quotes in system prompt strings (chat.rs, bedrock.rs) that prevented compilation
-            - **NEW**: 5 simulation tests for backend error handling (503, 500, 429, success, empty choices)
-
-            ## Features
-            - Three.js WebView robot renderer on Android with rich 3D animations
-            - Auto-TTS for AI chat responses and thought bubbles
-            - Voice input: double-tap robot to record, tap again to think
-            - Single-tap robot to open chat box (text input)
-            - Long-press robot for Settings/Standby/Schedule/Notes menu
-            - Live transcription on speech bubble during voice recording
-            - Native hand tracking with front camera + pinch gesture to drag robot
-            - Streaming chat with tool execution
-            - SQLite/JSONL persistent memory across sessions
-            - Proactive speech bubbles at user-adjustable intervals
-
-            ## AI Server
-            Backend: Configure your own backend server
+            Release notes are generated automatically below.
           files: |
-            artifacts/argos-android-release.apk
-            artifacts/argos-android-release.aab
+            artifacts/argos-android-release-apk/argos-android-release.apk
+            artifacts/argos-android-release-aab/argos-android-release.aab
           draft: false
           prerelease: false
           generate_release_notes: true
 
+  publish-play:
+    # Only runs when the Play service-account secret is configured.
+    needs: [build-android]
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for Play credentials
+        id: check
+        env:
+          SA: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SA" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No GOOGLE_PLAY_SERVICE_ACCOUNT secret — skipping Play upload."
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download AAB artifact
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: argos-android-release-aab
+          path: artifacts
+
       - name: Write service account JSON
+        if: steps.check.outputs.skip == 'false'
         env:
           GCP_SA_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
         run: |
-          # Write the secret to a file via env var (avoids shell interpolation issues)
           printenv GCP_SA_JSON > service-account.json
-          # Check if it's base64-encoded (no curly braces = likely base64)
           if ! grep -q '{' service-account.json 2>/dev/null; then
-            echo "Looks like base64, decoding..."
             base64 -d service-account.json > service-account-decoded.json
             mv service-account-decoded.json service-account.json
           fi
-          echo "File size: $(wc -c < service-account.json) bytes"
-          # Validate JSON
           python3 -c "import json; d=json.load(open('service-account.json')); print('Valid JSON, email:', d.get('client_email','?'))"
 
-      - name: Upload AAB to Google Play Store (Internal Testing)
+      - name: Upload AAB to Google Play (internal testing)
+        if: steps.check.outputs.skip == 'false'
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJson: service-account.json
