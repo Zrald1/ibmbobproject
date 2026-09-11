@@ -30,6 +30,12 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # The repo is authored on Windows, so gradlew can lose its executable
+      # bit in the checkout — without this the step fails with exit code 126.
+      - name: Make gradlew executable
+        working-directory: android
+        run: chmod +x gradlew
+
       # Debug build — no signing secrets needed. The release workflow
       # (.github/workflows/release.yml) handles the signed tag builds.
       - name: Build Android APK (Debug)
