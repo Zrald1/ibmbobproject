@@ -1,4 +1,4 @@
-name: Release Builds
+name: Release APK
 
 # Triggered by pushing a version tag, e.g.
 #   git tag v1.0.0 && git push origin v1.0.0
@@ -70,7 +70,7 @@ jobs:
         working-directory: android
         run: chmod +x gradlew
 
-      - name: Build Android APK (Release)
+      - name: Build release APK
         working-directory: android
         env:
           # Absolute path — app/build.gradle resolves it with file(), which is
@@ -80,15 +80,6 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'argos-key' }}
           ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon --stacktrace
-
-      - name: Build Android AAB (Release)
-        working-directory: android
-        env:
-          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/signing/argos-release.keystore
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'argos-key' }}
-          ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
-        run: ./gradlew bundleRelease --no-daemon --stacktrace
 
       - name: Verify the APK is release-signed
         run: |
@@ -101,23 +92,14 @@ jobs:
             exit 1
           fi
 
-      - name: Rename artifacts
-        run: |
-          cp android/app/build/outputs/apk/release/app-release.apk argos-android-release.apk
-          cp android/app/build/outputs/bundle/release/app-release.aab argos-android-release.aab
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk argos-android-release.apk
 
-      - name: Upload Android APK artifact
+      - name: Upload release APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: argos-android-release-apk
           path: argos-android-release.apk
-          retention-days: 90
-
-      - name: Upload Android AAB artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: argos-android-release-aab
-          path: argos-android-release.aab
           retention-days: 90
 
       - name: Clean up keystore
@@ -139,13 +121,11 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download artifacts
+      - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
+          name: argos-android-release-apk
           path: artifacts
-
-      - name: List artifacts
-        run: ls -laR artifacts/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -155,14 +135,11 @@ jobs:
           body: |
             # Argos ${{ steps.tag.outputs.tag }}
 
-            ## Downloads
+            ## Download
             - **Android APK** — `argos-android-release.apk` (sideload on your phone)
-            - **Android AAB** — `argos-android-release.aab`
 
             Release notes are generated automatically below.
-          files: |
-            artifacts/argos-android-release-apk/argos-android-release.apk
-            artifacts/argos-android-release-aab/argos-android-release.aab
+          files: artifacts/argos-android-release.apk
           draft: false
           prerelease: false
           generate_release_notes: true
