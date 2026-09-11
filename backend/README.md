@@ -1,222 +1,186 @@
-# Argos Backend Integration Guide
+# Argos Backend
 
-This directory is intentionally empty. The backend is **not included** in this repository.
+FastAPI backend for the Argos Android app. It receives the user's text or voice,
+calls an LLM, and returns a reply plus tool tags that drive the robot's
+expressions and gestures.
 
-You need to build your own backend server that implements the API endpoints listed below.
-The Android app communicates with the backend via HTTP/HTTPS REST calls.
-
-## Architecture Overview
+## Architecture
 
 ```
-┌─────────────────┐         HTTP/HTTPS          ┌─────────────────┐
-│  Android App    │  ────────────────────────►  │  Your Backend   │
-│                 │                              │                 │
-│  WebView        │  POST /api/chat              │  AI Provider    │
-│   └─ Three.js   │  POST /api/thought           │  (Bedrock/      │
-│      Robot      │  POST /api/transcribe         │   OpenAI/etc)   │
-│                 │  POST /api/voice              │                 │
-│  FloatingRobot  │  POST /api/auth/device        │  SQLite/        │
-│  Service        │  GET  /api/health             │  PostgreSQL     │
-│                 │                              │                 │
-└─────────────────┘  ◄────────────────────────  └─────────────────┘
+┌─────────────────┐        HTTP/HTTPS         ┌──────────────────────────┐
+│  Android App    │  ──────────────────────►  │  Argos Backend (this)    │
+│                 │                           │                          │
+│  WebView        │  POST /api/chat           │  LLM  (OpenAI-compatible)│
+│   └─ Three.js   │  POST /api/thought        │   ├─ Cerebras            │
+│      Robot      │  POST /api/voice          │   ├─ Groq                │
+│                 │                           │   └─ OpenAI              │
+│  FloatingRobot  │                           │                          │
+│  Service        │  ◄──────────────────────  │  STT  (selectable)       │
+│                 │                           │   ├─ OpenAI-compatible   │
+└─────────────────┘                           │   └─ AssemblyAI          │
+                                              └──────────────────────────┘
 ```
 
-## How the Robot Connects
+The Three.js robot (`android/app/src/main/assets/argos_robot.html`) runs inside a
+WebView and does **not** call the backend directly. The flow is:
 
-The Three.js robot (`assets/argos_robot.html`) runs inside a WebView in `FloatingRobotService.java`.
-The robot does **NOT** call the backend directly. The flow is:
+1. `FloatingRobotService.java` sends the user's message (or recorded audio) to the backend
+2. The backend calls the LLM and returns the reply, which may contain tool tags
+3. Java parses the tags and calls `robotWebView.evaluateJavascript("ArgosJS.setExpression('HAPPY')", null)`
+4. The Three.js robot updates its face, hands and animation accordingly
 
-1. `FloatingRobotService.java` sends user message to `POST /api/chat`
-2. Backend calls AI provider (Bedrock, OpenAI, etc.), returns response + expression tag
-3. Java parses the response and calls `robotWebView.evaluateJavascript("ArgosJS.setExpression('HAPPY')", null)`
-4. The Three.js robot updates its face/expression/hands accordingly
+## Setup
 
-## Expression Tags
-
-The AI response can include tags that control the robot's expression and hand gestures.
-Your backend should instruct the AI to include these tags in responses:
-
-### Expressions (sent via `ArgosJS.setExpression()`)
-
-| Expression | Description |
-|-----------|-------------|
-| `NEUTRAL` | Default face |
-| `HAPPY` | Smiling eyes, green glow |
-| `THINKING` | One eye squinted, purple glow, head tilt |
-| `TALKING` | Normal eyes, animated mouth |
-| `SLEEPING` | Closed eyes, dim glow |
-| `SURPRISED` | Wide eyes, open mouth, yellow glow |
-| `BLINK` | Quick eye close |
-| `WINK` | Left eye close, slight smile |
-| `LOVE` | Heart eyes, pink glow |
-| `ANGRY` | Narrowed eyes, red glow |
-| `SAD` | Downturned mouth, blue glow |
-| `CONFUSED` | Uneven eyes, tilted head |
-| `EXCITED` | Wide eyes, big smile, bright glow |
-| `DIZZY` | Spiral eyes, wobbly |
-| `STAR_EYES` | Star-shaped eyes |
-| `SCARED` | Wide eyes, trembling |
-| `LAUGHING` | Big smile, tears of joy |
-| `HIDING_EYES` | Hands covering eyes (privacy mode) |
-
-### Hand Gestures (sent via `ArgosJS.setHandGesture()`)
-
-| Gesture | Description |
-|---------|-------------|
-| `NONE` | Hands hidden |
-| `WAVE` | Both hands waving — greeting |
-| `POINT` | Right hand pointing forward |
-| `FIST` | Both hands clenched — determined |
-| `OPEN` | Both palms forward — welcoming |
-| `HEART` | Both hands form heart shape |
-| `THUMBS_UP` | Right thumb up |
-| `PEACE` | Right hand peace sign (V) |
-| `THINK` | Right hand on chin |
-| `BELLY` | Both hands on belly — laughing |
-| `CHEEKS` | Both hands on cheeks — surprised |
-| `DOWN` | Both hands hanging low — sad |
-| `RAISED` | Both hands raised — celebrating |
-| `CLAP` | Both hands together — clapping |
-| `SHRUG` | Both hands out, palms up — "I don't know" |
-| `SCRATCH` | Right hand scratching head — confused |
-| `TREMBLE` | Both hands trembling — scared |
-| `REST` | Default resting position |
-
-### Expression Sequences
-
-The robot can play a sequence of expressions with durations:
-
-```javascript
-ArgosJS.playExpressionSequence('[{"expr":"SURPRISED","duration":1.0},{"expr":"HAPPY","duration":2.0}]')
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env              # then fill in your API keys
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-## Required API Endpoints
+Interactive API docs are served at `http://<host>:8000/docs`.
 
-### Authentication (Device-Based — No Email)
+## Configuration
 
-#### `POST /api/auth/device`
-Request:
-```json
-{
-  "device_id": "unique_device_identifier",
-  "device_name": "Pixel 8"
-}
-```
-Response:
-```json
-{
-  "access_token": "jwt_token",
-  "token_type": "bearer",
-  "device_id": "unique_device_identifier",
-  "user": {
-    "id": 1,
-    "username": "device_abc123"
-  }
-}
-```
+Everything is environment-driven — see [`.env.example`](.env.example) for every
+option and provider combination.
 
-### Chat
+### LLM (chat)
 
-#### `POST /api/chat`
-Headers: `Authorization: Bearer <jwt_token>`
-Request:
+Any OpenAI-compatible `/chat/completions` endpoint works; switch provider by
+changing three values:
+
+| Provider | `LLM_API_BASE` | `LLM_MODEL` |
+|---|---|---|
+| Cerebras | `https://api.cerebras.ai/v1` | `qwen-3.8-27b` |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+
+`LLM_REASONING_EFFORT` controls hidden reasoning tokens (`none` keeps replies
+fast). Leave it **blank** for providers that reject the field (e.g. Groq).
+
+### Speech-to-text
+
+Selected with `STT_PROVIDER`:
+
+| `STT_PROVIDER` | Endpoint | Notes |
+|---|---|---|
+| `openai` (default) | `{STT_API_BASE}/audio/transcriptions` | Groq Whisper / OpenAI Whisper. Falls back to `LLM_API_KEY` when `STT_API_KEY` is blank |
+| `assemblyai` | `{STT_API_BASE}/transcribe`, then `v2/upload` + poll | Needs its own key; tries the sync endpoint first and automatically falls back to the v2 flow |
+
+`STT_API_BASE` and `STT_MODEL` are optional — sensible defaults are chosen per
+provider.
+
+## API Reference
+
+### `POST /api/chat`
+
 ```json
 {
   "message": "What's on my screen?",
-  "history": [
-    {"role": "user", "content": "Hello"},
-    {"role": "assistant", "content": "Hi there!"}
-  ]
+  "history": [{"role": "user", "content": "Hello"}],
+  "screen_context": "{\"context\":\"screen\",\"app\":\"YouTube\"}"
 }
 ```
+
 Response:
+
 ```json
-{
-  "response": "I can see you're looking at [APP_NAME]. [TOOL:EXPRESSION:HAPPY] [TOOL:HAND:WAVE] Let me help you with that!",
-  "expression": "HAPPY",
-  "hand_gesture": "WAVE"
-}
+{ "response": "I can see you're on YouTube. [TOOL:EXPR:HAPPY] [TOOL:HAND:WAVE]" }
 ```
 
-The response can include these tags (parsed by the Android app):
-- `[TOOL:EXPRESSION:EXPRESSION_NAME]` — Sets the robot's facial expression
-- `[TOOL:HAND:GESTURE_NAME]` — Sets the robot's hand gesture
+### `POST /api/voice`
 
-### Proactive Thoughts
+`multipart/form-data` with:
 
-#### `POST /api/thought`
-Headers: `Authorization: Bearer <jwt_token>`
-Request:
+| Field | Type | Description |
+|---|---|---|
+| `file` | file | WAV audio (16 kHz mono 16-bit, as sent by the app) |
+| `history` | string | JSON-encoded conversation history |
+| `screen_context` | string | Optional JSON screen context |
+
+Response: same shape as `/api/chat` (transcribe, then chat).
+
+### `POST /api/thought`
+
 ```json
-{
-  "screen_context": "User is viewing YouTube",
-  "current_app": "com.google.android.youtube"
-}
+{ "prompt": "The user just opened YouTube." }
 ```
+
 Response:
+
 ```json
-{
-  "thought": "Nice video choice! [TOOL:EXPRESSION:HAPPY]",
-  "expression": "HAPPY"
-}
+{ "thought": "Nice video choice! [TOOL:EXPR:HAPPY]" }
 ```
 
-### Voice Pipeline
+## Tool Tags
 
-#### `POST /api/transcribe`
-Headers: `Authorization: Bearer <jwt_token>`
-Request: `multipart/form-data` with `audio` field (WebM/WAV)
-Response:
-```json
-{
-  "text": "What time is it?",
-  "confidence": 0.95
-}
+The AI includes tags inline in its reply; the app strips them for display and
+speech, and executes them.
+
+### Expressions — `[TOOL:EXPR:NAME]`
+
+`NEUTRAL`, `HAPPY`, `THINKING`, `TALKING`, `SLEEPING`, `SURPRISED`, `BLINK`,
+`WINK`, `LOVE`, `ANGRY`, `SAD`, `CONFUSED`, `EXCITED`, `DIZZY`, `STAR_EYES`,
+`SCARED`, `LAUGHING`, `HIDING_EYES`
+
+### Expression sequences — `[TOOL:EXPRSEQ:JSON]`
+
+```
+[TOOL:EXPRSEQ:[{"expr":"SURPRISED","duration":1.0},{"expr":"HAPPY","duration":2.0}]]
 ```
 
-#### `POST /api/voice`
-Headers: `Authorization: Bearer <jwt_token>`
-Request: `multipart/form-data` with `audio` field
-Response: Same as `/api/chat` (transcribes, then chats)
+### Hand gestures — `[TOOL:HAND:NAME]`
 
-### Health Check
+`NONE`, `WAVE`, `POINT`, `FIST`, `OPEN`, `HEART`, `THUMBS_UP`, `PEACE`, `THINK`,
+`BELLY`, `CHEEKS`, `DOWN`, `RAISED`, `CLAP`, `SHRUG`, `SCRATCH`, `TREMBLE`, `REST`
 
-#### `GET /api/health`
-Response:
-```json
-{
-  "status": "ok",
-  "version": "1.0.0"
-}
+### Action tags
+
+`[TOOL:LOOK]`, `[TOOL:OPEN:package]`, `[TOOL:SEARCH:query]`,
+`[TOOL:BROWSER:url]`, `[TOOL:TYPE:text]`, `[TOOL:PASTE:text]`, `[TOOL:COPY:text]`,
+`[TOOL:SCHEDULE:HH:MM:task]`, plus the notes file tools (`WRITE_FILE`, `READ_FILE`,
+`LIST_FILES`, `EDIT_FILE`, …).
+
+The authoritative tag list lives in [`app/ai/prompt.py`](app/ai/prompt.py) — keep
+it in sync with `FloatingRobotService.java`.
+
+## Project Layout
+
+```
+backend/
+├── app/
+│   ├── main.py               # FastAPI app + CORS
+│   ├── config.py             # Provider configuration (env-driven)
+│   ├── schemas.py            # Request/response models
+│   ├── transcription.py      # STT providers
+│   ├── ai/
+│   │   ├── client.py         # LLM client
+│   │   └── prompt.py         # System prompt + tool-tag protocol
+│   └── routes/
+│       ├── chat.py
+│       ├── voice.py
+│       └── thought.py
+├── .env.example
+├── requirements.txt
+└── README.md
 ```
 
-## Database Schema (Recommended)
+## Development Tools
 
-```sql
-CREATE TABLE users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT NOT NULL,
-  device_id TEXT UNIQUE,
-  created_at TEXT DEFAULT (datetime('now'))
-);
+These are browser-side simulations used to verify the pipeline without building
+the APK. They are not part of the deployed backend:
 
-CREATE TABLE ai_providers (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT,
-  type TEXT,
-  api_url TEXT,
-  api_key TEXT,
-  api_secret TEXT,
-  aws_region TEXT,
-  model TEXT,
-  max_tokens INTEGER,
-  temperature REAL,
-  is_active BOOLEAN DEFAULT 0
-);
-```
+| File | Purpose |
+|---|---|
+| `app_simulation.html` / `app_simulation.js` | Faithful port of the app's voice pipeline (real mic → WAV → `/api/voice` → TTS) |
+| `robot_preview.html` | Renders `argos_robot.html` on a dark backdrop |
+| `SIMULATION_README.md` | How the simulation maps to `FloatingRobotService.java` |
 
 ## Security Notes
 
-- JWT tokens should expire (recommended: 7 days = 10080 minutes)
+- Never commit `.env` — it is git-ignored; only `.env.example` is tracked
 - Use HTTPS in production
-- Store all secrets in environment variables, never in code
+- Keep API keys in environment variables, never in code
