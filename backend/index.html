@@ -1,0 +1,106 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Argos App Simulation — AssemblyAI + Cerebras</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: linear-gradient(135deg, #0a0c14 0%, #0f1220 100%);
+    color: #e0e0e0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    overflow-x: hidden; padding-bottom: 20px;
+}
+.header { text-align: center; padding: 16px; }
+.header h1 { font-size: 20px; color: #00e5cc; text-shadow: 0 0 20px rgba(0,229,204,0.3); }
+.header p { font-size: 11px; color: #666; margin-top: 4px; }
+
+.robot-stage { width: 260px; height: 260px; margin: 4px auto; }
+#robotCanvas { width: 100%; height: 100%; }
+
+.status-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 20px; margin: 4px auto;
+    background: rgba(0,229,204,0.05);
+    border: 1px solid rgba(0,229,204,0.2);
+    border-radius: 20px; font-size: 12px;
+}
+.status-dot { width: 10px; height: 10px; border-radius: 50%; background: #555; transition: all 0.3s; }
+.status-dot.idle { background: #00e5cc; box-shadow: 0 0 10px #00e5cc; }
+.status-dot.recording { background: #ff3333; box-shadow: 0 0 10px #ff3333; animation: pulse 1s infinite; }
+.status-dot.thinking { background: #ffdd00; box-shadow: 0 0 10px #ffdd00; animation: pulse 0.5s infinite; }
+.status-dot.talking { background: #00ff88; box-shadow: 0 0 10px #00ff88; animation: pulse 0.8s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.conversation {
+    width: 92%; max-width: 520px; height: 220px; overflow-y: auto;
+    margin: 6px auto; padding: 10px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);
+}
+.msg { margin: 6px 0; padding: 8px 14px; border-radius: 12px; font-size: 14px; max-width: 88%; animation: fadeIn 0.3s; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.msg.user { background: rgba(0,229,204,0.1); border: 1px solid rgba(0,229,204,0.2); margin-left: auto; }
+.msg.argos { background: rgba(0,150,255,0.1); border: 1px solid rgba(0,150,255,0.2); }
+.msg .tag { font-size: 10px; color: #00e5cc; margin-bottom: 2px; }
+.expr-badge {
+    display: inline-block; margin-top: 4px; padding: 2px 10px; border-radius: 10px;
+    font-size: 11px; background: rgba(0,229,204,0.15); color: #00e5cc;
+}
+
+.controls { display: flex; gap: 12px; margin: 8px auto; }
+.btn { padding: 13px 26px; border: none; border-radius: 30px; font-size: 14px; font-weight: 600; cursor: pointer; color: white; transition: all 0.2s; }
+.btn-mic { background: linear-gradient(135deg, #00e5cc, #00b8a0); box-shadow: 0 4px 15px rgba(0,229,204,0.3); }
+.btn-mic:hover { transform: scale(1.05); }
+.btn-mic.recording { background: linear-gradient(135deg, #ff3333, #cc1111); animation: micPulse 1.5s infinite; }
+@keyframes micPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+.btn-stop { background: linear-gradient(135deg, #ff8844, #cc6622); }
+
+.config-bar { display: flex; gap: 8px; align-items: center; margin: 4px auto; flex-wrap: wrap; justify-content: center; }
+.config-bar label { font-size: 11px; color: #666; }
+.config-bar input {
+    background: rgba(0,0,0,0.4); border: 1px solid rgba(0,229,204,0.2);
+    color: #aaa; padding: 6px 12px; border-radius: 8px; font-size: 12px; width: 220px;
+}
+.hint { font-size: 11px; color: #555; text-align: center; margin-top: 8px; max-width: 520px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>Argos App Simulation</h1>
+    <p>Real mic → WAV → /api/voice → AssemblyAI STT → Cerebras qwen-3.8-27b → TTS</p>
+</div>
+
+<div class="config-bar">
+    <label>Backend:</label>
+    <input type="text" id="backendUrl" value="http://13.229.100.183:8000" />
+</div>
+
+<div class="robot-stage">
+    <canvas id="robotCanvas" width="520" height="520"></canvas>
+</div>
+
+<div class="status-bar">
+    <div class="status-dot idle" id="statusDot"></div>
+    <span id="statusText">Idle — double-tap the robot (or press SPACE) to talk</span>
+</div>
+
+<div class="conversation" id="convoLog"></div>
+
+<div class="controls">
+    <button class="btn btn-mic" id="micBtn">🎤 Hold to Talk</button>
+    <button class="btn btn-stop" id="stopBtn" style="display:none;">⏹ Stop</button>
+</div>
+
+<div class="hint">
+    Double-tap the robot or press <b>SPACE</b> to start. Recording auto-stops after 4 s of silence
+    (or 30 s max), then the audio is sent to the backend exactly as the app does.
+</div>
+
+<script src="app_simulation.js"></script>
+</body>
+</html>

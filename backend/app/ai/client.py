@@ -46,7 +46,7 @@ def _describe_screen_context(screen_context: Optional[str]) -> Optional[str]:
     return f'The user is currently in "{app}".'
 
 
-def _call_llm(messages: List[dict], max_tokens: int = 400, temperature: float = 0.85) -> str:
+def _call_llm(messages: List[dict], max_tokens: int = 200, temperature: float = 0.85) -> str:
     if not LLM_API_KEY:
         raise RuntimeError(
             "LLM_API_KEY is not configured. Set it in your .env file before making AI requests."
@@ -62,6 +62,7 @@ def _call_llm(messages: List[dict], max_tokens: int = 400, temperature: float = 
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
+        "reasoning_effort": "none",
     }
 
     resp = requests.post(url, headers=headers, json=payload, timeout=LLM_TIMEOUT_SECONDS)

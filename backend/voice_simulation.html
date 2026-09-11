@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Argos Voice Simulation - Cerebras + AssemblyAI</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: linear-gradient(135deg, #0a0c14 0%, #0f1220 100%);
+    color: #e0e0e0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow-x: hidden;
+}
+
+.header {
+    text-align: center;
+    padding: 20px;
+    width: 100%;
+}
+.header h1 {
+    font-size: 22px;
+    color: #00e5cc;
+    text-shadow: 0 0 20px rgba(0,229,204,0.3);
+}
+.header p {
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+}
+
+/* ── Robot Container ── */
+.robot-stage {
+    width: 280px;
+    height: 280px;
+    position: relative;
+    margin: 10px auto;
+}
+#robotCanvas {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Status ── */
+.status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 20px;
+    background: rgba(0,229,204,0.05);
+    border: 1px solid rgba(0,229,204,0.2);
+    border-radius: 20px;
+    margin: 5px auto;
+    font-size: 13px;
+}
+.status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #555;
+    transition: all 0.3s;
+}
+.status-dot.idle { background: #00e5cc; box-shadow: 0 0 10px #00e5cc; }
+.status-dot.listening { background: #ff4444; box-shadow: 0 0 10px #ff4444; animation: pulse 1s infinite; }
+.status-dot.thinking { background: #ffdd00; box-shadow: 0 0 10px #ffdd00; animation: pulse 0.5s infinite; }
+.status-dot.talking { background: #00ff88; box-shadow: 0 0 10px #00ff88; animation: pulse 0.8s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* ── Conversation ── */
+.conversation {
+    width: 90%;
+    max-width: 500px;
+    height: 200px;
+    overflow-y: auto;
+    margin: 10px auto;
+    padding: 10px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+.msg {
+    margin: 6px 0;
+    padding: 8px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    max-width: 85%;
+    animation: fadeIn 0.3s;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.msg.user {
+    background: rgba(0,229,204,0.1);
+    border: 1px solid rgba(0,229,204,0.2);
+    margin-left: auto;
+}
+.msg.argos {
+    background: rgba(0,150,255,0.1);
+    border: 1px solid rgba(0,150,255,0.2);
+}
+.msg .tag {
+    font-size: 10px;
+    color: #00e5cc;
+    margin-bottom: 2px;
+}
+
+/* ── Controls ── */
+.controls {
+    display: flex;
+    gap: 12px;
+    margin: 10px auto;
+}
+.btn {
+    padding: 14px 28px;
+    border: none;
+    border-radius: 30px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    color: white;
+}
+.btn-mic {
+    background: linear-gradient(135deg, #00e5cc, #00b8a0);
+    box-shadow: 0 4px 15px rgba(0,229,204,0.3);
+}
+.btn-mic:hover { transform: scale(1.05); box-shadow: 0 6px 20px rgba(0,229,204,0.5); }
+.btn-mic.recording {
+    background: linear-gradient(135deg, #ff4444, #cc2222);
+    box-shadow: 0 4px 15px rgba(255,68,68,0.4);
+    animation: micPulse 1.5s infinite;
+}
+@keyframes micPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+.btn-stop {
+    background: linear-gradient(135deg, #ff8844, #cc6622);
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Config ── */
+.config-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin: 5px auto;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+.config-bar input {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid rgba(0,229,204,0.2);
+    color: #aaa;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    width: 200px;
+}
+.config-bar label {
+    font-size: 11px;
+    color: #666;
+}
+
+/* ── Expression badge ── */
+.expr-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: rgba(0,229,204,0.15);
+    color: #00e5cc;
+    margin-top: 4px;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>Argos Voice Simulation</h1>
+    <p>Cerebras qwen-3.8-27b + AssemblyAI + Web Speech TTS</p>
+</div>
+
+<!-- Config -->
+<div class="config-bar">
+    <label>Backend:</label>
+    <input type="text" id="backendUrl" value="http://13.229.100.183:8000" />
+</div>
+
+<!-- Robot -->
+<div class="robot-stage">
+    <canvas id="robotCanvas" width="560" height="560"></canvas>
+</div>
+
+<!-- Status -->
+<div class="status-bar">
+    <div class="status-dot idle" id="statusDot"></div>
+    <span id="statusText">Idle — Double-tap or press button to talk</span>
+</div>
+
+<!-- Conversation log -->
+<div class="conversation" id="convoLog"></div>
+
+<!-- Controls -->
+<div class="controls">
+    <button class="btn btn-mic" id="micBtn" onclick="toggleVoice()">
+        🎤 Hold to Talk
+    </button>
+    <button class="btn btn-stop" id="stopBtn" onclick="stopSpeaking()" style="display:none;">
+        ⏹ Stop
+    </button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// Argos Voice Simulation
+// Mimics: double-tap → record → AssemblyAI STT → Cerebras LLM → TTS
+// ═══════════════════════════════════════════════════════
+
+const STATES = {
+    IDLE: 'idle',
+    LISTENING: 'listening',
+    THINKING: 'thinking',
+    TALKING: 'talking'
+};
+
+let currentState = STATES.IDLE;
+let currentExpression = 'NEUTRAL';
+let isRecording = false;
+let recognition = null;
+let synth = window.speechSynthesis;
+let backendUrl = document.getElementById('backendUrl').value;
+
+// ── Status UI ──
+function setState(state) {
+    currentState = state;
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    dot.className = 'status-dot ' + state;
+    const labels = {
+        idle: 'Idle — Double-tap or press button to talk',
+        listening: 'Listening... (speak now)',
+        thinking: 'Thinking... (Cerebras processing)',
+        talking: 'Speaking... (TTS playback)'
+    };
+    text.textContent = labels[state] || state;
+}
+
+// ── Conversation log ──
+function addMessage(role, text, expr) {
+    const log = document.getElementById('convoLog');
+    const div = document.createElement('div');
+    div.className = 'msg ' + (role === 'user' ? 'user' : 'argos');
+    const tag = role === 'user' ? 'You' : 'Argos';
+    let html = `<div class="tag">${tag}</div>${text}`;
+    if (expr) html += `<div class="expr-badge">${expr}</div>`;
+    div.innerHTML = html;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+}
+
+// ── Web Speech API for voice input (browser-side STT) ──
+function initRecognition() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+        alert('SpeechRecognition not supported. Use Chrome.');
+        return null;
+    }
+    const rec = new SR();
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.lang = 'en-US';
+    return rec;
+}
+
+function toggleVoice() {
+    if (currentState === STATES.TALKING) {
+        stopSpeaking();
+        return;
+    }
+    if (isRecording) {
+        stopRecording();
+        return;
+    }
+    startRecording();
+}
+
+function startRecording() {
+    backendUrl = document.getElementById('backendUrl').value;
+    recognition = initRecognition();
+    if (!recognition) return;
+
+    recognition.onstart = () => {
+        isRecording = true;
+        setState(STATES.LISTENING);
+        const btn = document.getElementById('micBtn');
+        btn.textContent = '⏹ Stop & Send';
+        btn.classList.add('recording');
+    };
+
+    recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        addMessage('user', transcript);
+        sendToBackend(transcript);
+    };
+
+    recognition.onerror = (event) => {
+        console.error('STT error:', event.error);
+        setState(STATES.IDLE);
+        resetMicButton();
+        if (event.error === 'no-speech') {
+            addMessage('argos', '(No speech detected. Try again.)');
+        }
+    };
+
+    recognition.onend = () => {
+        isRecording = false;
+        resetMicButton();
+        if (currentState === STATES.LISTENING) {
+            setState(STATES.THINKING);
+        }
+    };
+
+    recognition.start();
+}
+
+function stopRecording() {
+    if (recognition && isRecording) {
+        recognition.stop();
+    }
+}
+
+function resetMicButton() {
+    const btn = document.getElementById('micBtn');
+    btn.textContent = '🎤 Hold to Talk';
+    btn.classList.remove('recording');
+}
+
+// ── Send to backend /api/chat (text mode, mimics voice pipeline) ──
+async function sendToBackend(text) {
+    setState(STATES.THINKING);
+    const startTime = performance.now();
+
+    try {
+        const body = JSON.stringify({
+            message: text,
+            history: [],
+            screen_context: null
+        });
+
+        const resp = await fetch(backendUrl + '/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+        });
+
+        if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`HTTP ${resp.status}: ${err}`);
+        }
+
+        const data = await resp.json();
+        const elapsed = Math.round(performance.now() - startTime);
+
+        const rawReply = data.response || '';
+        // Parse [TOOL:EXPR:...] tags
+        const exprMatch = rawReply.match(/\[TOOL:EXPR:([^\]]+)\]/);
+        if (exprMatch) {
+            currentExpression = exprMatch[1];
+        }
+        // Strip tool tags for display and TTS
+        const clean = rawReply.replace(/\[TOOL:[^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
+
+        addMessage('argos', clean, exprMatch ? `Expression: ${currentExpression}` : null);
+        console.log(`Reply in ${elapsed}ms: ${clean}`);
+
+        // Speak via TTS
+        if (clean) {
+            speakText(clean);
+        } else {
+            setState(STATES.IDLE);
+        }
+    } catch (err) {
+        console.error('Backend error:', err);
+        addMessage('argos', 'Error: ' + err.message);
+        setState(STATES.IDLE);
+    }
+}
+
+// ── TTS via Web Speech API ──
+function speakText(text) {
+    if (!synth) {
+        console.warn('SpeechSynthesis not supported');
+        setState(STATES.IDLE);
+        return;
+    }
+    synth.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 1.0;
+    utter.pitch = 1.1;
+    utter.volume = 1.0;
+
+    utter.onstart = () => {
+        setState(STATES.TALKING);
+        document.getElementById('stopBtn').style.display = 'inline-block';
+    };
+    utter.onend = () => {
+        setState(STATES.IDLE);
+        document.getElementById('stopBtn').style.display = 'none';
+    };
+    utter.onerror = () => {
+        setState(STATES.IDLE);
+        document.getElementById('stopBtn').style.display = 'none';
+    };
+
+    synth.speak(utter);
+}
+
+function stopSpeaking() {
+    if (synth) synth.cancel();
+    setState(STATES.IDLE);
+    document.getElementById('stopBtn').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════════
+// 2D Robot Canvas (mimics the 3D Argos robot expressions)
+// ═══════════════════════════════════════════════════════
+const canvas = document.getElementById('robotCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const cx = W / 2, cy = H / 2;
+let animTime = 0;
+
+// Expression colors
+const EXPR_COLORS = {
+    NEUTRAL: '#00e5cc', HAPPY: '#00ff88', THINKING: '#ffdd00', TALKING: '#00e5cc',
+    SURPRISED: '#ffaa00', SAD: '#4488ff', ANGRY: '#ff4444', LOVE: '#ff66aa',
+    EXCITED: '#ff8800', CONFUSED: '#aa44ff', SLEEPING: '#444466',
+    LAUGHING: '#00ff88', WINK: '#00e5cc', SCARED: '#ffffff'
+};
+
+function getExprColor() {
+    return EXPR_COLORS[currentExpression] || '#00e5cc';
+}
+
+function drawRobot() {
+    ctx.clearRect(0, 0, W, H);
+    animTime += 0.016;
+
+    const bob = Math.sin(animTime * 1.8) * 8;
+    const isTalking = currentState === STATES.TALKING;
+    const isThinking = currentState === STATES.THINKING;
+    const isListening = currentState === STATES.LISTENING;
+    const isSleeping = currentExpression === 'SLEEPING';
+
+    const eyeColor = getExprColor();
+    const headR = 120;
+
+    // ── Glow ring (outer) ──
+    const ringPulse = 1 + Math.sin(animTime * 2.5) * 0.08;
+    ctx.strokeStyle = eyeColor + '40';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bob, headR * 1.3 * ringPulse, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // ── Glow ring (inner) ──
+    ctx.strokeStyle = eyeColor + '25';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bob, headR * 1.15 * ringPulse, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // ── Head sphere (dark glossy) ──
+    const headGrad = ctx.createRadialGradient(cx - 30, cy + bob - 30, 10, cx, cy + bob, headR);
+    headGrad.addColorStop(0, '#1a1a2e');
+    headGrad.addColorStop(0.5, '#0a0a14');
+    headGrad.addColorStop(1, '#050508');
+    ctx.fillStyle = headGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bob, headR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ── Head wireframe edge ──
+    ctx.strokeStyle = eyeColor + '60';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bob, headR, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // ── Eyes ──
+    const eyeY = cy + bob - 20;
+    const eyeSpacing = 50;
+    let eyeSizeX = 18, eyeSizeY = 18;
+
+    // Expression-based eye modifications
+    if (isSleeping) { eyeSizeY = 2; }
+    if (currentExpression === 'HAPPY' || currentExpression === 'LAUGHING') { eyeSizeY = 14; }
+    if (currentExpression === 'SURPRISED' || currentExpression === 'EXCITED') { eyeSizeX = 22; eyeSizeY = 22; }
+    if (currentExpression === 'SAD') { eyeSizeY = 12; }
+    if (currentExpression === 'WINK') { eyeSizeY = 2; } // right eye winks
+    if (currentExpression === 'ANGRY') { eyeSizeY = 10; }
+    if (currentExpression === 'LOVE') {
+        // Heart eyes
+        drawHeart(cx - eyeSpacing, eyeY, 20, '#ff66aa');
+        drawHeart(cx + eyeSpacing, eyeY, 20, '#ff66aa');
+    } else if (currentExpression === 'STAR_EYES') {
+        drawStar(cx - eyeSpacing, eyeY, 18, '#ffdd00');
+        drawStar(cx + eyeSpacing, eyeY, 18, '#ffdd00');
+    } else {
+        // Normal eyes with glow
+        const eyeGlow = isTalking ? 1.3 : (isThinking ? 0.7 : 1.0);
+        ctx.shadowBlur = 20 * eyeGlow;
+        ctx.shadowColor = eyeColor;
+        ctx.fillStyle = eyeColor;
+
+        // Left eye
+        ctx.beginPath();
+        ctx.ellipse(cx - eyeSpacing, eyeY, eyeSizeX, eyeSizeY, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Right eye (wink only affects right)
+        const rightEyeY = currentExpression === 'WINK' ? 2 : eyeSizeY;
+        ctx.beginPath();
+        ctx.ellipse(cx + eyeSpacing, eyeY, eyeSizeX, rightEyeY, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.shadowBlur = 0;
+    }
+
+    // ── Thinking dots (when thinking) ──
+    if (isThinking) {
+        for (let i = 0; i < 3; i++) {
+            const dotPhase = Math.floor(animTime * 3) % 3;
+            const dotY = cy + bob + 40 + (i === dotPhase ? -8 : 0);
+            const dotOpacity = i === dotPhase ? 1.0 : 0.3;
+            ctx.fillStyle = `rgba(255, 221, 0, ${dotOpacity})`;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#ffdd00';
+            ctx.beginPath();
+            ctx.arc(cx - 30 + i * 30, dotY, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+    }
+
+    // ── Mouth ──
+    const mouthY = cy + bob + 40;
+    ctx.strokeStyle = eyeColor;
+    ctx.lineWidth = 4;
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = eyeColor;
+
+    if (isTalking) {
+        // Animated talking mouth
+        const mouthOpen = Math.abs(Math.sin(animTime * 12)) * 25 + 5;
+        ctx.fillStyle = eyeColor + '40';
+        ctx.beginPath();
+        ctx.ellipse(cx, mouthY, 30, mouthOpen, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(cx, mouthY, 30, mouthOpen, 0, 0, Math.PI * 2);
+        ctx.stroke();
+    } else if (isSleeping) {
+        // Flat line
+        ctx.beginPath();
+        ctx.moveTo(cx - 20, mouthY);
+        ctx.lineTo(cx + 20, mouthY);
+        ctx.stroke();
+    } else if (currentExpression === 'HAPPY' || currentExpression === 'LAUGHING') {
+        // Smile
+        ctx.beginPath();
+        ctx.arc(cx, mouthY - 10, 25, 0.2, Math.PI - 0.2);
+        ctx.stroke();
+    } else if (currentExpression === 'SAD') {
+        // Frown
+        ctx.beginPath();
+        ctx.arc(cx, mouthY + 15, 25, Math.PI + 0.2, -0.2);
+        ctx.stroke();
+    } else if (currentExpression === 'SURPRISED' || currentExpression === 'EXCITED') {
+        // O shape
+        ctx.beginPath();
+        ctx.arc(cx, mouthY, 15, 0, Math.PI * 2);
+        ctx.stroke();
+    } else {
+        // Neutral slight smile
+        ctx.beginPath();
+        ctx.arc(cx, mouthY - 5, 18, 0.3, Math.PI - 0.3);
+        ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+
+    // ── Antenna ──
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + bob - headR);
+    ctx.lineTo(cx, cy + bob - headR - 25);
+    ctx.stroke();
+
+    // Antenna tip
+    const tipPulse = isListening ? 1 + Math.sin(animTime * 8) * 0.3 : 1;
+    ctx.fillStyle = isListening ? '#ff4444' : eyeColor;
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = isListening ? '#ff4444' : eyeColor;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bob - headR - 28, 8 * tipPulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // ── Recording indicator ──
+    if (isListening) {
+        const recPulse = 1 + Math.sin(animTime * 6) * 0.2;
+        ctx.strokeStyle = `rgba(255, 68, 68, ${0.3 + Math.sin(animTime * 6) * 0.2})`;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + bob, headR * 1.4 * recPulse, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // ── Expression label ──
+    ctx.fillStyle = '#666';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(currentExpression, cx, H - 20);
+}
+
+function drawHeart(x, y, size, color) {
+    ctx.fillStyle = color;
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = color;
+    ctx.beginPath();
+    ctx.moveTo(x, y + size * 0.3);
+    ctx.bezierCurveTo(x, y - size * 0.2, x - size, y - size * 0.2, x - size, y + size * 0.2);
+    ctx.bezierCurveTo(x - size, y + size * 0.6, x, y + size * 0.8, x, y + size);
+    ctx.bezierCurveTo(x, y + size * 0.8, x + size, y + size * 0.6, x + size, y + size * 0.2);
+    ctx.bezierCurveTo(x + size, y - size * 0.2, x, y - size * 0.2, x, y + size * 0.3);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+}
+
+function drawStar(x, y, size, color) {
+    ctx.fillStyle = color;
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = color;
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+        const angle = (i * Math.PI) / 5 - Math.PI / 2;
+        const r = i % 2 === 0 ? size : size * 0.4;
+        const px = x + Math.cos(angle) * r;
+        const py = y + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+}
+
+// ── Animation loop ──
+function animate() {
+    drawRobot();
+    requestAnimationFrame(animate);
+}
+animate();
+
+// ── Double-tap / double-click on robot to start voice ──
+let lastTap = 0;
+canvas.addEventListener('click', () => {
+    const now = Date.now();
+    if (now - lastTap < 350) {
+        // Double-tap detected
+        toggleVoice();
+        lastTap = 0;
+    } else {
+        lastTap = now;
+    }
+});
+
+// ── Keyboard shortcut: Spacebar to talk ──
+document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && currentState !== STATES.THINKING) {
+        e.preventDefault();
+        toggleVoice();
+    }
+});
+
+console.log('Argos Voice Simulation ready. Double-tap robot or press button to talk.');
+</script>
+</body>
+</html>

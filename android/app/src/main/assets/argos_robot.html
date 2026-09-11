@@ -21,13 +21,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: transparen
 
 const canvas = document.getElementById('canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-renderer.setPixelRatio(window.devicePixelRatio);
+// Cap the pixel ratio: on high-DPI phones devicePixelRatio can be 3+, which
+// makes the transparent overlay WebGL surface enormous and tanks the frame
+// rate. 2x is visually indistinguishable here and far cheaper to render.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x000000, 0);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 0, 3.2);
+// Pulled back from 3.2 so the full model — hands, aura rings and the fresnel
+// rim — fits inside the (now wider) WebView box instead of being cut off.
+camera.position.set(0, 0, 3.9);
 camera.lookAt(0, 0, 0);
 
 // ── Lighting ──
@@ -47,17 +52,14 @@ const robot = new THREE.Group();
 scene.add(robot);
 
 // ── Materials ──
-// Modern MeshPhysicalMaterial for the spherical head — adds clearcoat for a
-// glossy robotic shell finish and metalness for a premium look. Based on
-// Three.js docs (MeshPhysicalMaterial) and modern robot design research.
-const headMat = new THREE.MeshPhysicalMaterial({
+// MeshPhongMaterial rather than MeshPhysicalMaterial: the glossy look on this
+// near-black head is practically identical, but PhysicalMaterial's clearcoat
+// adds an extra lighting pass that costs real frames on a mobile WebView.
+const headMat = new THREE.MeshPhongMaterial({
     color: 0x0a0a0f,
-    metalness: 0.4,
-    roughness: 0.35,
-    clearcoat: 0.6,
-    clearcoatRoughness: 0.2,
-    emissive: 0x050508,
-    emissiveIntensity: 0.5
+    specular: 0x224455,
+    shininess: 60,
+    emissive: 0x050508
 });
 const cyanMat = new THREE.MeshBasicMaterial({ color: 0x00e5cc });
 const cyanGlowMat = new THREE.MeshBasicMaterial({
@@ -68,21 +70,43 @@ const cyanGlowMat = new THREE.MeshBasicMaterial({
 // ── Head — black sphere (circular) ──
 // Radius 1.1 matches half the old box width (2.2) for a similar on-screen size.
 // A sphere gives the robot a clean circular silhouette from every angle.
-const headGeo = new THREE.SphereGeometry(1.1, 48, 48);
+// 32x24 segments is smooth at this on-screen size and much cheaper to draw
+// than 48x48.
+const headGeo = new THREE.SphereGeometry(1.1, 32, 24);
 const head = new THREE.Mesh(headGeo, headMat);
 robot.add(head);
 
-// Head edge glow (subtle cyan wireframe outline on the sphere)
-const edgeGeo = new THREE.WireframeGeometry(headGeo);
-const edgeMat = new THREE.LineBasicMaterial({ color: 0x00e5cc, transparent: true, opacity: 0.15 });
-const edges = new THREE.LineSegments(edgeGeo, edgeMat);
-robot.add(edges);
+// Head edge glow removed — the low-poly wireframe read as an unwanted "grid
+// line" across the robot. The fresnel rim shell below provides the neon edge
+// instead, at lower cost.
+const edges = { material: { opacity: 0 } };   // kept as a no-op for old refs
 
 // ── Eyes — cyan squares ──
 // Reprojected onto the sphere surface: at (x=±0.55, y=0.15) the sphere
 // surface sits at z ≈ sqrt(1.1² − 0.55² − 0.15²) ≈ 0.94, so place eyes
 // at z=0.95 to sit just on the surface.
-const eyeGeo = new THREE.BoxGeometry(0.5, 0.5, 0.15);
+// Rounded-rectangle eye. A bevelled extruded rounded rect reads far more
+// "designed" than a flat box, and still scales cleanly for the expression
+// system (blink/squint just squash scale.y).
+function roundedRectShape(w, h, r) {
+    const s = new THREE.Shape();
+    const x = -w / 2, y = -h / 2;
+    s.moveTo(x + r, y);
+    s.lineTo(x + w - r, y);
+    s.quadraticCurveTo(x + w, y, x + w, y + r);
+    s.lineTo(x + w, y + h - r);
+    s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    s.lineTo(x + r, y + h);
+    s.quadraticCurveTo(x, y + h, x, y + h - r);
+    s.lineTo(x, y + r);
+    s.quadraticCurveTo(x, y, x + r, y);
+    return s;
+}
+const eyeGeo = new THREE.ExtrudeGeometry(roundedRectShape(0.5, 0.5, 0.17), {
+    depth: 0.10, bevelEnabled: true,
+    bevelThickness: 0.025, bevelSize: 0.025, bevelSegments: 2, curveSegments: 6
+});
+eyeGeo.center();
 
 const leftEye = new THREE.Mesh(eyeGeo, cyanMat);
 leftEye.position.set(-0.55, 0.15, 0.95);
@@ -92,15 +116,84 @@ const rightEye = new THREE.Mesh(eyeGeo, cyanMat);
 rightEye.position.set(0.55, 0.15, 0.95);
 robot.add(rightEye);
 
-// Eye glow planes (behind eyes for neon effect)
-const glowGeo = new THREE.PlaneGeometry(0.7, 0.7);
-const leftGlow = new THREE.Mesh(glowGeo, cyanGlowMat);
+// Soft radial-gradient halo texture — a real falloff instead of a hard square
+// plane edge. Generated once on a canvas, so it costs nothing per frame.
+function makeGlowTexture() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grd.addColorStop(0.0, 'rgba(255,255,255,1)');
+    grd.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+    grd.addColorStop(0.7, 'rgba(255,255,255,0.16)');
+    grd.addColorStop(1.0, 'rgba(255,255,255,0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+}
+const glowTex = makeGlowTexture();
+
+// Eye halos (behind the eyes) — soft neon bloom without any post-processing
+const glowGeo = new THREE.PlaneGeometry(1.0, 1.0);
+const leftGlow = new THREE.Mesh(glowGeo, cyanGlowMat.clone());
+leftGlow.material.map = glowTex;
 leftGlow.position.set(-0.55, 0.15, 0.92);
 robot.add(leftGlow);
 
-const rightGlow = new THREE.Mesh(glowGeo, cyanGlowMat);
+const rightGlow = new THREE.Mesh(glowGeo, cyanGlowMat.clone());
+rightGlow.material.map = glowTex;
 rightGlow.position.set(0.55, 0.15, 0.92);
 robot.add(rightGlow);
+
+// Catchlights — a tiny bright highlight on each eye gives it a glossy,
+// "alive" look. Parented to the eye so it follows blinks and squints.
+const catchGeo = new THREE.SphereGeometry(0.06, 8, 6);
+const catchMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const leftCatch = new THREE.Mesh(catchGeo, catchMat);
+leftCatch.position.set(-0.14, 0.15, 0.09);
+leftEye.add(leftCatch);
+const rightCatch = new THREE.Mesh(catchGeo, catchMat);
+rightCatch.position.set(-0.14, 0.15, 0.09);
+rightEye.add(rightCatch);
+
+// ── Fresnel rim-glow shell (the "fake glow material" technique) ──
+// A slightly larger transparent sphere whose shader brightens at grazing
+// angles (rim = pow(1 - dot(normal, view), power)). Gives the head a premium
+// neon edge with no post-processing pass — important on a mobile WebView.
+const rimGlowMat = new THREE.ShaderMaterial({
+    uniforms: {
+        uColor: { value: new THREE.Color(0x00e5cc) },
+        uPower: { value: 2.6 },
+        uIntensity: { value: 1.5 }
+    },
+    vertexShader: [
+        'varying vec3 vN;',
+        'varying vec3 vV;',
+        'void main() {',
+        '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+        '  vN = normalize(normalMatrix * normal);',
+        '  vV = normalize(-mv.xyz);',
+        '  gl_Position = projectionMatrix * mv;',
+        '}'
+    ].join('\n'),
+    fragmentShader: [
+        'uniform vec3 uColor;',
+        'uniform float uPower;',
+        'uniform float uIntensity;',
+        'varying vec3 vN;',
+        'varying vec3 vV;',
+        'void main() {',
+        '  float rim = 1.0 - max(0.0, dot(normalize(vN), normalize(vV)));',
+        '  rim = pow(rim, uPower) * uIntensity;',
+        '  gl_FragColor = vec4(uColor * rim, rim);',
+        '}'
+    ].join('\n'),
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+});
+const rimShell = new THREE.Mesh(new THREE.SphereGeometry(1.15, 32, 24), rimGlowMat);
+robot.add(rimShell);
 
 // ── Mouth — cyan horizontal bar ──
 // Reprojected onto sphere surface: at (x=0, y=−0.45) z ≈ sqrt(1.1² − 0.45²) ≈ 1.0
@@ -109,9 +202,10 @@ const mouth = new THREE.Mesh(mouthGeo, cyanMat);
 mouth.position.set(0, -0.45, 1.0);
 robot.add(mouth);
 
-// Mouth glow
-const mouthGlowGeo = new THREE.PlaneGeometry(1.1, 0.25);
+// Mouth glow — soft radial falloff so it doesn't read as a rectangle
+const mouthGlowGeo = new THREE.PlaneGeometry(1.6, 0.6);
 const mouthGlow = new THREE.Mesh(mouthGlowGeo, cyanGlowMat.clone());
+mouthGlow.material.map = glowTex;
 mouthGlow.position.set(0, -0.45, 0.97);
 robot.add(mouthGlow);
 
@@ -175,30 +269,47 @@ const lensRing = new THREE.Mesh(lensRingGeo, lensRingMat);
 lensRing.position.set(0, 0, -1.08);
 robot.add(lensRing);
 
-// Antenna on top of the sphere
-const antennaGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.4, 8);
-const antennaMat = new THREE.MeshPhongMaterial({ color: 0x1a1a2e });
-const antenna = new THREE.Mesh(antennaGeo, antennaMat);
-antenna.position.set(0, 1.3, 0);
-robot.add(antenna);
+// ── Neon circular aura (concentric rings around the head) ──
+// Camera-facing rings that read as a glowing neon halo, matching the
+// simulation design. Added in the XY plane (facing +Z) so they frame the
+// head from the front; they pulse and tint with the robot's state below.
+const auraGroup = new THREE.Group();
+robot.add(auraGroup);
 
-const antennaTipGeo = new THREE.SphereGeometry(0.08, 12, 12);
-const antennaTipMat = new THREE.MeshBasicMaterial({ color: 0x00e5cc });
-const antennaTip = new THREE.Mesh(antennaTipGeo, antennaTipMat);
-antennaTip.position.set(0, 1.52, 0);
-robot.add(antennaTip);
+const auraRingMat = new THREE.MeshBasicMaterial({
+    color: 0x00e5cc, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+const auraRingInner = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.018, 6, 48), auraRingMat);
+auraGroup.add(auraRingInner);
+
+const auraRingMat2 = new THREE.MeshBasicMaterial({
+    color: 0x00e5cc, transparent: true, opacity: 0.28,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+const auraRingOuter = new THREE.Mesh(new THREE.TorusGeometry(1.62, 0.012, 6, 48), auraRingMat2);
+auraGroup.add(auraRingOuter);
+
+const auraRingMat3 = new THREE.MeshBasicMaterial({
+    color: 0x00e5cc, transparent: true, opacity: 0.14,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+const auraRingFaint = new THREE.Mesh(new THREE.TorusGeometry(1.72, 0.008, 6, 48), auraRingMat3);
+auraGroup.add(auraRingFaint);
 
 // ── Floating Hands (neon blue, 3 fingers, no arms) ──
 // Hands are 1/4 the size of the head (head=2.2 wide, hand~0.55)
 // Positioned at the BOTTOM of the robot, not the top
 // Neon blue color — stands out against the cyan/teal robot body
 const NEON_BLUE = 0x00aaff;
+// Brighter, more saturated neon — strong emissive so the hands read as
+// glowing neon even against the dark head and the additive aura rings.
 const handMat = new THREE.MeshPhongMaterial({
-    color: NEON_BLUE, transparent: true, opacity: 0.92,
-    shininess: 60, emissive: 0x002244, emissiveIntensity: 0.4
+    color: 0x00ccff, transparent: true, opacity: 0.95,
+    shininess: 90, emissive: 0x00aaff, emissiveIntensity: 0.9
 });
 const handGlowMat = new THREE.MeshBasicMaterial({
-    color: NEON_BLUE, transparent: true, opacity: 0.25,
+    color: 0x00ddff, transparent: true, opacity: 0.45,
     blending: THREE.AdditiveBlending, depthWrite: false
 });
 
@@ -296,13 +407,16 @@ function createHand() {
     palmGlow.position.set(0, 0, -0.12);
     handGroup.add(palmGlow);
 
-    // 4 fingers — anatomical spread across the top of the palm
+    // 4 fingers — anatomical spread across the top of the palm.
+    // The thumb sits on the +X (inner) side of this base hand, so the index
+    // finger must be on +X too and the pinky on −X — otherwise the hand reads
+    // as a mirrored/wrong hand once it's placed on screen.
     // Proportions: index/middle longer, ring slightly shorter, pinky shortest
     var fingerConfigs = [
-        { x: -0.20, l1: 0.24, l2: 0.20 }, // index
-        { x: -0.07, l1: 0.26, l2: 0.22 }, // middle (longest)
-        { x:  0.07, l1: 0.24, l2: 0.20 }, // ring
-        { x:  0.20, l1: 0.20, l2: 0.17 }, // pinky (shortest)
+        { x:  0.20, l1: 0.24, l2: 0.20 }, // index (inner, thumb side)
+        { x:  0.07, l1: 0.26, l2: 0.22 }, // middle (longest)
+        { x: -0.07, l1: 0.24, l2: 0.20 }, // ring
+        { x: -0.20, l1: 0.20, l2: 0.17 }, // pinky (shortest, outer)
     ];
     var fingers = [];
     for (var i = 0; i < fingerConfigs.length; i++) {
@@ -313,10 +427,12 @@ function createHand() {
     }
     handGroup.userData.fingers = fingers;
 
-    // Thumb — 2 phalanges, positioned on the side at an angle
+    // Thumb — 2 phalanges, on the INNER (+X) side of the palm, angled up.
+    // The mirrored right hand flips this to its own inner side, so both
+    // thumbs point toward the robot's centre.
     var thumbBase = new THREE.Group();
-    thumbBase.position.set(-0.28, -0.02, 0.05);
-    thumbBase.rotation.z = 0.9; // angled outward
+    thumbBase.position.set(0.30, -0.02, 0.05);
+    thumbBase.rotation.z = -0.6; // angled inward/up
     handGroup.add(thumbBase);
 
     var thumbProximal = createCapsuleMesh(thumbCylGeo, thumbCapGeo, handMat, thumbLength);
@@ -380,6 +496,36 @@ var currentFingerCurl = [0.15, 0.15, 0.15, 0.15];
 var targetThumbCurl = 0.1;
 var currentThumbCurl = 0.1;
 
+// Word-timed hand gestures — driven from Java's TTS onRangeStart() callback so
+// the hands move in step with the words actually being spoken.
+var speakWordIndex = 0;
+var speakGestureHold = 0;
+var speakLastGesture = '';
+// Fallback gesture cycler used when the TTS engine supplies no word timings,
+// so the hands never freeze during speech.
+var talkFallbackTimer = 0;
+// Idle heartbeat — forces a new behavior if Argos sits idle far too long.
+var idleHeartbeat = 0;
+// Stuck-state watchdog — no state may persist beyond this long.
+var stateStuckTimer = 0;
+var lastStuckState = '';
+// Per-frame error counter — a repeatedly-throwing frame would otherwise
+// silently skip the animation and look like a freeze.
+var frameErrorCount = 0;
+// Frozen auto-restart watchdog
+var frozenTimer = 0;
+var frozenState = '';
+var frozenX = 0, frozenY = 0;
+// Mouth viseme approximation (research: mouth openness follows vowels, and
+// punctuation maps to a short silence/closure — a period is a longer pause
+// than a comma).
+var speakMouthOpen = 0;    // 0..1 target openness for the current word
+var speakMouthHold = 0;    // seconds to hold the current word's shape
+var speakPauseHold = 0;    // seconds of closure after punctuation
+// Safety timer: if the talking state is never cleared (a TTS engine that never
+// fires onDone), Argos must not stay stuck — see the check in animate().
+var talkingWatchdog = 0;
+
 // ── Tear drops (for laughing — tears of joy) ──
 var tearGeo = new THREE.SphereGeometry(0.08, 12, 12);
 var tearMat = new THREE.MeshBasicMaterial({
@@ -431,9 +577,281 @@ const particleMat = new THREE.PointsMaterial({
 const particles = new THREE.Points(particleGeo, particleMat);
 robot.add(particles);
 
+// ── Nanotech particle cloud (dissolve → travel → reassemble) ──
+// When the robot moves, its meshes are hidden and replaced by this point
+// cloud, which samples the head shell + eyes + mouth so it reconstructs the
+// robot's OWN silhouette (not a generic blob). Each particle lerps between
+// "home" (assembled) and "scatter" (dissolved) by nanoProgress (0..1).
+const NANO_COUNT = 1600;
+const nanoGeo = new THREE.BufferGeometry();
+const nanoPos = new Float32Array(NANO_COUNT * 3);
+const nanoHome = new Float32Array(NANO_COUNT * 3);
+const nanoScatter = new Float32Array(NANO_COUNT * 3);
+// Per-particle "streak" factors. The scattered cloud is laid out ALONG the
+// travel direction (nanoAlong) with a narrow perpendicular jitter (nanoJit),
+// so it forms a comet-like line pointing where the robot is heading instead of
+// a shapeless puff.
+const nanoAlong = new Float32Array(NANO_COUNT);
+const nanoJit = new Float32Array(NANO_COUNT * 3);
+// Per-particle dissolve threshold (research: a progress threshold combined
+// with a position gradient produces a directional "wipe" dissolve instead of
+// the whole body popping at once). 0 = top of the body, 1 = bottom.
+const nanoThresh = new Float32Array(NANO_COUNT);
+const NANO_EDGE = 0.28;   // soft width of the wipe edge
+
+// Deterministic Fibonacci-sphere sampling — the cloud always rebuilds the
+// same silhouette, and nothing is allocated per frame.
+// Coverage spans the WHOLE visible model so the rebuild never looks like it is
+// missing pieces: head shell, eyes, mouth, and the neon aura rings.
+const NANO_GOLDEN = Math.PI * (3 - Math.sqrt(5));
+const NANO_HEAD_END = Math.floor(NANO_COUNT * 0.58);
+const NANO_EYES_END = Math.floor(NANO_COUNT * 0.70);
+const NANO_MOUTH_END = Math.floor(NANO_COUNT * 0.80);
+for (let i = 0; i < NANO_COUNT; i++) {
+    let x, y, z;
+    if (i < NANO_HEAD_END) {
+        // Head shell (radius 1.1)
+        const n = NANO_HEAD_END - 1;
+        const vy = 1 - (i / n) * 2;
+        const rr = Math.sqrt(Math.max(0, 1 - vy * vy));
+        const th = NANO_GOLDEN * i;
+        x = Math.cos(th) * rr * 1.1; y = vy * 1.1; z = Math.sin(th) * rr * 1.1;
+    } else if (i < NANO_EYES_END) {
+        // Eyes (patches around ±0.55, 0.15, 0.95)
+        const side = (i % 2 === 0) ? -1 : 1;
+        x = side * 0.55 + (Math.random() - 0.5) * 0.45;
+        y = 0.15 + (Math.random() - 0.5) * 0.45;
+        z = 0.95;
+    } else if (i < NANO_MOUTH_END) {
+        // Mouth bar (around 0, −0.45, 1.0)
+        x = (Math.random() - 0.5) * 0.9;
+        y = -0.45 + (Math.random() - 0.5) * 0.12;
+        z = 1.0;
+    } else {
+        // Neon aura rings — so the halo dissolves/rebuilds with the body
+        const rings = [1.35, 1.62, 1.72];
+        const r = rings[i % 3];
+        const a = Math.random() * Math.PI * 2;
+        x = Math.cos(a) * r;
+        y = Math.sin(a) * r;
+        z = (Math.random() - 0.5) * 0.06;
+    }
+    nanoHome[i * 3] = x; nanoHome[i * 3 + 1] = y; nanoHome[i * 3 + 2] = z;
+    // Outward component (kept INSIDE the camera frustum — a wider spread got
+    // clipped by the canvas edges and made the effect read as a hard square).
+    const len = Math.sqrt(x * x + y * y + z * z) || 1;
+    const spread = 0.9 + Math.random() * 0.9;   // 0.9 – 1.8
+    nanoScatter[i * 3] = (x / len) * spread + (Math.random() - 0.5) * 0.4;
+    nanoScatter[i * 3 + 1] = (y / len) * spread + (Math.random() - 0.5) * 0.4;
+    nanoScatter[i * 3 + 2] = (z / len) * spread + (Math.random() - 0.5) * 0.4;
+    // Streak: distance along the travel direction, tapering at the tip
+    nanoAlong[i] = 0.5 + Math.random() * 1.9;
+    const jitter = 0.42 * (1 - Math.min(1, nanoAlong[i] / 2.6));  // narrows toward tip
+    nanoJit[i * 3] = (Math.random() - 0.5) * jitter;
+    nanoJit[i * 3 + 1] = (Math.random() - 0.5) * jitter;
+    nanoJit[i * 3 + 2] = (Math.random() - 0.5) * jitter;
+    // Sweep threshold: 0 at the top of the body, 1 at the bottom, so the robot
+    // breaks apart top→bottom and rebuilds bottom→top. Mapped into
+    // [0, 1−NANO_EDGE] so progress=1 fully dissolves every particle, and a
+    // little noise keeps the wipe edge from looking mechanical.
+    const baseThresh = (1.9 - y) / 3.8;
+    nanoThresh[i] = Math.min(1 - NANO_EDGE,
+        Math.max(0, baseThresh * (1 - NANO_EDGE) + (Math.random() - 0.5) * 0.18));
+    nanoPos[i * 3] = x; nanoPos[i * 3 + 1] = y; nanoPos[i * 3 + 2] = z;
+}
+nanoGeo.setAttribute('position', new THREE.BufferAttribute(nanoPos, 3));
+const nanoMat = new THREE.PointsMaterial({
+    color: 0x00e5cc, size: 0.035, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false
+});
+const nanoPoints = new THREE.Points(nanoGeo, nanoMat);
+// Scene-level (not a child of robot) so robot rotation can't distort the
+// cloud; position/scale are synced to the robot each frame instead.
+scene.add(nanoPoints);
+
+// Dissolve / reassemble phase machine.
+// Unequal durations on purpose (research: equal phases read as monotonous):
+// the disappearance is a slow 2s, the travel is at least 5s, and the rebuild
+// is a deliberately slow 8s so the "nanotech reconstruction" is legible.
+let nanoProgress = 0;          // 0 = assembled, 1 = fully dissolved
+let nanoPhase = 'assembled';   // assembled | dissolving | traveling | reforming
+let nanoTimer = 0;
+let nanoTravelDuration = 5;
+let nanoTravelStartX = 0, nanoTravelStartY = 0;
+let nanoStuckTimer = 0;        // watchdog
+let invisibleTimer = 0;        // hard safety: body hidden too long
+let nanoCooldown = 0;
+// Random reconstruction direction — the cloud streams in from a random side
+// (bottom / top / left / right / front / back) each time.
+let nanoDirX = 0, nanoDirY = -1, nanoDirZ = 0;
+const NANO_DISSOLVE_TIME = 2.0;   // fast disappearance
+const NANO_TRAVEL_MIN = 5.0;      // movement takes at least 5s
+const NANO_TRAVEL_MAX = 8.0;      // ...but never drags on longer than this
+const NANO_REFORM_TIME = 1.2;     // fast reconstruction
+const NANO_IDLE_STANDBY = 8.0;    // let the user do a task
+const NANO_COOLDOWN = 5.0;        // cooldown before it may dissolve again
+const NANO_SWIRL_SPEED = 6.0;     // particle churn — deliberately fast
+const NANO_SWIRL_AMOUNT = 0.22;   // how far each particle wanders per cycle
+
+function pickNanoDirection() {
+    // Prefer the direction the robot is actually travelling, so the particle
+    // streak points where it is heading (screen Y is down, 3D Y is up).
+    var dx = walkTargetX - robotScreenX;
+    var dy = walkTargetY - robotScreenY;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    if (d > 40) {
+        nanoDirX = dx / d;
+        nanoDirY = -dy / d;
+        nanoDirZ = 0;
+        return;
+    }
+    var dirs = [[0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0], [0, 0, -1], [0, 0, 1]];
+    var r = dirs[Math.floor(Math.random() * dirs.length)];
+    nanoDirX = r[0]; nanoDirY = r[1]; nanoDirZ = r[2];
+}
+
+// Advance the dissolve/reassemble effect and write particle positions.
+// Called once per rendered frame from animate().
+function updateNano(dt) {
+    if (nanoCooldown > 0) nanoCooldown = Math.max(0, nanoCooldown - dt);
+
+    if (nanoPhase === 'dissolving') {
+        nanoTimer += dt;
+        nanoProgress = Math.min(1, nanoTimer / NANO_DISSOLVE_TIME);
+        if (nanoProgress >= 1) {
+            nanoPhase = 'traveling';
+            nanoTimer = 0;
+            // Snapshot where we started and size the travel to at least
+            // NANO_TRAVEL_MIN seconds regardless of distance.
+            nanoTravelStartX = robotScreenX;
+            nanoTravelStartY = robotScreenY;
+            const ddx = walkTargetX - robotScreenX;
+            const ddy = walkTargetY - robotScreenY;
+            const ddist = Math.sqrt(ddx * ddx + ddy * ddy);
+            nanoTravelDuration = Math.min(NANO_TRAVEL_MAX,
+                Math.max(NANO_TRAVEL_MIN, ddist / Math.max(1, walkSpeed)));
+        }
+    } else if (nanoPhase === 'reforming') {
+        nanoTimer += dt;
+        nanoProgress = Math.max(0, 1 - nanoTimer / NANO_REFORM_TIME);
+        if (nanoProgress <= 0) {
+            nanoPhase = 'assembled';
+            nanoTimer = 0;
+            nanoCooldown = NANO_COOLDOWN;
+            // Rebuilt — stand by so the user has time to give a task.
+            if (currentState === STATES.WALKING) {
+                currentState = STATES.IDLE;
+                stateDuration = NANO_IDLE_STANDBY;
+                stateTimer = 0;   // restart the idle countdown
+            }
+        }
+    }
+
+    // ── Watchdog ──
+    // If any transient phase overruns badly (a dropped frame storm, an
+    // interrupted walk, a WebView hiccup) force the body back to solid so the
+    // robot can never get stuck invisible / "not working".
+    if (nanoPhase !== 'assembled') {
+        nanoStuckTimer += dt;
+        if (nanoStuckTimer > NANO_DISSOLVE_TIME + NANO_TRAVEL_MIN + NANO_REFORM_TIME + 6) {
+            nanoPhase = 'assembled';
+            nanoProgress = 0;
+            nanoTimer = 0;
+            nanoStuckTimer = 0;
+            nanoCooldown = NANO_COOLDOWN;
+            if (currentState === STATES.WALKING) {
+                currentState = STATES.IDLE;
+                stateDuration = NANO_IDLE_STANDBY;
+                stateTimer = 0;
+            }
+        }
+    } else {
+        nanoStuckTimer = 0;
+    }
+
+    // ── Hard safety: never stay invisible ──
+    // Whatever the cause (a phase desync, an interrupted walk, a state change
+    // mid-flight), the solid body must not remain hidden. If it has been gone
+    // far longer than the longest possible cycle, snap everything back to
+    // assembled so Argos is always visible and roaming again.
+    if (!robot.visible) {
+        invisibleTimer += dt;
+        if (invisibleTimer > 16) {
+            invisibleTimer = 0;
+            nanoPhase = 'assembled';
+            nanoProgress = 0;
+            nanoTimer = 0;
+            nanoCooldown = NANO_COOLDOWN;
+            nanoMat.opacity = 0;
+            robot.visible = true;
+            handsGroup.visible = true;
+            if (currentState === STATES.WALKING) {
+                currentState = STATES.IDLE;
+                stateDuration = NANO_IDLE_STANDBY;
+                stateTimer = 0;
+            }
+        }
+    } else {
+        invisibleTimer = 0;
+    }
+
+    // Smoothstep easing on the assemble/dissolve blend
+    const arr = nanoGeo.attributes.position.array;
+    // Fast churn — particles visibly race around while dissolved.
+    const drift = animTime * NANO_SWIRL_SPEED;
+    for (let i = 0; i < NANO_COUNT; i++) {
+        const i3 = i * 3;
+        const hx = nanoHome[i3], hy = nanoHome[i3 + 1], hz = nanoHome[i3 + 2];
+        // Per-particle local progress against its sweep threshold. This is what
+        // makes the body break apart PROGRESSIVELY — top→bottom on the way out,
+        // bottom→top on the way back — instead of popping all at once.
+        let lp = (nanoProgress - nanoThresh[i]) / NANO_EDGE;
+        lp = lp < 0 ? 0 : (lp > 1 ? 1 : lp);
+        const e = lp * lp * (3 - 2 * lp);
+        if (e <= 0) {
+            // Still solid — sit exactly on the body so the remaining shape
+            // stays visibly intact (the robot "removes parts of its own").
+            arr[i3] = hx; arr[i3 + 1] = hy; arr[i3 + 2] = hz;
+            continue;
+        }
+        // Streak laid out ALONG the travel direction (a comet-like "figure of
+        // line" pointing where the robot is heading), plus a small outward
+        // puff and perpendicular jitter, with a fast churn.
+        const a = nanoAlong[i];
+        const sw = Math.sin(drift + i) * NANO_SWIRL_AMOUNT;
+        const sx = hx + nanoDirX * a + (nanoScatter[i3] - hx) * 0.35 + nanoJit[i3] + sw;
+        const sy = hy + nanoDirY * a + (nanoScatter[i3 + 1] - hy) * 0.35 + nanoJit[i3 + 1] + sw;
+        const sz = hz + nanoDirZ * a + (nanoScatter[i3 + 2] - hz) * 0.35 + nanoJit[i3 + 2] + sw;
+        arr[i3] = hx + (sx - hx) * e;
+        arr[i3 + 1] = hy + (sy - hy) * e;
+        arr[i3 + 2] = hz + (sz - hz) * e;
+    }
+    nanoGeo.attributes.position.needsUpdate = true;
+
+    // Fade the particle cloud in fast as the solid body hands over to it.
+    const cloudAlpha = Math.min(1, nanoProgress / 0.12);
+    nanoMat.opacity = cloudAlpha;
+    nanoMat.color.copy(currentEyeColor);
+    // Follow the robot's position + depth scale (not rotation)
+    nanoPoints.position.copy(robot.position);
+    nanoPoints.scale.copy(robot.scale);
+
+    // Hand over from the solid body to the particle cloud almost immediately,
+    // so the progressive particle wipe IS the visible dissolve.
+    const showRobot = nanoProgress < 0.12;
+    robot.visible = showRobot;
+    handsGroup.visible = showRobot;
+
+    // Self-heal: the solid body must never stay hidden while fully assembled.
+    if (nanoPhase === 'assembled' && nanoProgress <= 0) {
+        robot.visible = true;
+        handsGroup.visible = true;
+    }
+}
+
 // ── State Management ──
 const STATES = { IDLE: 'idle', WALKING: 'walking', GREETING: 'greeting', THINKING: 'thinking', TALKING: 'talking', SPINNING: 'spinning', SLEEPING: 'sleeping', LISTENING: 'listening', RECORDING: 'recording', DANCING: 'dancing' };
-const EXPRESSIONS = { NEUTRAL: 'neutral', HAPPY: 'happy', THINKING: 'thinking', TALKING: 'talking', SLEEPING: 'sleeping', SURPRISED: 'surprised', BLINK: 'blink', WINK: 'wink', LOVE: 'love', ANGRY: 'angry', SAD: 'sad', CONFUSED: 'confused', EXCITED: 'excited', DIZZY: 'dizzy', STAR_EYES: 'star_eyes', SCARED: 'scared', LAUGHING: 'laughing', HIDING_EYES: 'hiding_eyes' };
+const EXPRESSIONS = { NEUTRAL: 'neutral', HAPPY: 'happy', THINKING: 'thinking', TALKING: 'talking', SLEEPING: 'sleeping', SURPRISED: 'surprised', BLINK: 'blink', WINK: 'wink', LOVE: 'love', ANGRY: 'angry', SAD: 'sad', CONFUSED: 'confused', EXCITED: 'excited', DIZZY: 'dizzy', STAR_EYES: 'star_eyes', SCARED: 'scared', LAUGHING: 'laughing', HIDING_EYES: 'hiding_eyes', LISTENING: 'listening', RECORDING: 'recording' };
 
 // Blink/teleport state
 let isTeleporting = false;
@@ -477,7 +895,8 @@ let danceBeatInterval = 0.5; // seconds per beat (120 BPM default)
 let danceMoveIndex = 0;
 let danceBlinkTimer = 0;
 let lastActivityTime = 0;
-const ACTIVITY_TIMEOUT = 30; // seconds of inactivity before stopping dance
+const ACTIVITY_TIMEOUT = 12; // seconds of inactivity before stopping dance
+// (was 30 — a 30s dance hold was a major contributor to "Argos stops for ~30s")
 
 // Turn animation state (180-degree turn to look at screen)
 let isTurning = false;
@@ -507,6 +926,24 @@ let currentEyeColor = new THREE.Color(0x00e5cc);
 let currentMouthColor = new THREE.Color(0x00e5cc);
 
 // ── JavaScript Interface (called from Java) ──
+
+// Standalone dance helpers.
+// BUG FIX: startDancing/stopDancing previously existed ONLY as methods on
+// window.ArgosJS, but were called as bare functions — onUserActivity() did
+// `startDancing()` and the animate loop's DANCING case did `stopDancing()`.
+// Both threw "Uncaught ReferenceError: startDancing is not defined", which:
+//   * aborted onUserActivity() on every touch/app-change, and
+//   * threw every frame once DANCING started, so the try/catch swallowed it
+//     and skipped the rest of the frame (roaming, glow, particles) — leaving
+//     Argos visibly stuck.
+// These hoisted wrappers make the bare calls resolve correctly.
+function startDancing() {
+    if (window.ArgosJS && window.ArgosJS.startDancing) window.ArgosJS.startDancing();
+}
+function stopDancing() {
+    if (window.ArgosJS && window.ArgosJS.stopDancing) window.ArgosJS.stopDancing();
+}
+
 window.ArgosJS = {
     setState: function(state) {
         currentState = state;
@@ -524,7 +961,9 @@ window.ArgosJS = {
         } else {
             if (currentState === STATES.THINKING) {
                 currentState = STATES.IDLE;
-                stateDuration = 3;
+                // Give the user the full standby window before roaming again.
+                stateDuration = NANO_IDLE_STANDBY;
+                stateTimer = 0;
                 currentExpression = EXPRESSIONS.NEUTRAL;
                 thinkingGroup.visible = false;
             }
@@ -535,11 +974,29 @@ window.ArgosJS = {
         if (val) {
             currentState = STATES.TALKING;
             currentExpression = EXPRESSIONS.TALKING;
+            speakWordIndex = 0;
+            speakMouthOpen = 0;
+            speakMouthHold = 0;
+            speakPauseHold = 0;
+            speakGestureHold = 0;
+            speakLastGesture = '';
+            talkFallbackTimer = 0;
+            talkingWatchdog = 0;
+            // Bring the hands back for speech — they were tucked away when the
+            // speech-to-text finished. onSpeakWord will vary them per word; if
+            // the engine gives no word timings, the TALKING case cycles them.
+            applyHandGesture('OPEN');
         } else {
             if (currentState === STATES.TALKING) {
                 currentState = STATES.IDLE;
-                stateDuration = 3;
+                // Argos never dissolves while talking — it starts its
+                // standby countdown only once speech has finished.
+                stateDuration = NANO_IDLE_STANDBY;
+                stateTimer = 0;
+                nanoCooldown = NANO_COOLDOWN;
                 currentExpression = EXPRESSIONS.NEUTRAL;
+                // Speech is over — tuck the hands away.
+                applyHandGesture('NONE');
             }
         }
         updateExpression();
@@ -579,6 +1036,40 @@ window.ArgosJS = {
         var upper = String(name || '').toUpperCase().trim();
         applyHandGesture(upper);
     },
+    // Called from Java for every word the TTS engine starts speaking
+    // (UtteranceProgressListener.onRangeStart). Gives the hands a per-word
+    // rhythm and a word-length-scaled hold instead of a fixed loop.
+    onSpeakWord: function(start, end, word) {
+        if (currentState !== STATES.TALKING) return;
+        speakWordIndex++;
+        // Randomised "explaining" gestures — point / open / raise / shrug read
+        // as talking with the hands rather than a fixed 3-pose loop.
+        var explaining = ['OPEN', 'POINT', 'RAISED', 'OPEN', 'SHRUG', 'POINT',
+                          'CLAP', 'OPEN', 'THUMBS_UP', 'PEACE', 'WAVE', 'OPEN',
+                          'THINK', 'POINT', 'OPEN', 'BELLY', 'OPEN', 'CHEEKS'];
+        var gesture = explaining[Math.floor(Math.random() * explaining.length)];
+        if (gesture === speakLastGesture) gesture = 'OPEN'; // avoid repeats
+        speakLastGesture = gesture;
+        applyHandGesture(gesture);
+        // Longer words settle/hold longer; short words snap.
+        var len = (word ? String(word).length : 4);
+        speakGestureHold = Math.min(1.2, 0.25 + len * 0.06);
+
+        // ── Mouth viseme approximation ──
+        // Openness follows the vowel ratio of the word (vowels = open,
+        // consonants = partial closure); the hold is scaled by word length.
+        var w = String(word || '');
+        var vowelCount = (w.match(/[aeiouy]/gi) || []).length;
+        var letterCount = Math.max(1, (w.match(/[a-z]/gi) || []).length);
+        speakMouthOpen = Math.min(1, 0.25 + (vowelCount / letterCount) * 1.1);
+        speakMouthHold = Math.min(0.6, 0.12 + len * 0.045);
+
+        // ── Punctuation → pause (research: sentence end = long silence,
+        // comma/clause = short silence) ──
+        var last = w.trim().slice(-1);
+        if (last === '.' || last === '!' || last === '?') speakPauseHold = 0.34;
+        else if (last === ',' || last === ';' || last === ':') speakPauseHold = 0.17;
+    },
     // AI-controllable movement
     moveTo: function(x, y) {
         walkToPosition(x, y);
@@ -617,9 +1108,11 @@ window.ArgosJS = {
     // Voice pipeline states
     startListening: function() {
         currentState = STATES.LISTENING;
-        currentExpression = EXPRESSIONS.EXCITED;
+        currentExpression = EXPRESSIONS.LISTENING;
         stateTimer = 0;
         updateExpression();
+        // Show neon hands in an open, attentive pose while listening
+        applyHandGesture('OPEN');
     },
     stopListening: function() {
         currentState = STATES.THINKING;
@@ -627,12 +1120,16 @@ window.ArgosJS = {
         thinkingGroup.visible = true;
         stateTimer = 0;
         updateExpression();
+        // Speech-to-text is done — tuck the hands away while Argos thinks.
+        applyHandGesture('NONE');
     },
     startRecording: function() {
         currentState = STATES.RECORDING;
-        currentExpression = EXPRESSIONS.EXCITED;
+        currentExpression = EXPRESSIONS.RECORDING;
         stateTimer = 0;
         updateExpression();
+        // Hands raised slightly, ready to gesture
+        applyHandGesture('RAISED');
     },
     stopRecording: function() {
         currentState = STATES.THINKING;
@@ -644,6 +1141,8 @@ window.ArgosJS = {
         glowRing2.material.color.setHex(0x00b8a0);
         robot.rotation.x = 0;
         updateExpression();
+        // Speech-to-text is done — tuck the hands away while Argos thinks.
+        applyHandGesture('NONE');
     },
     getVersion: function() { return '5.3'; },
     // Privacy mode — hands cover eyes when a blocked app is open
@@ -872,11 +1371,11 @@ function applyHandGesture(gesture) {
             targetFingerCurl = [0.2, 0.2, 0.2, 0.2]; targetThumbCurl = 0.1;
             break;
         case 'RAISED':
-            // Both hands raised up high — excited, celebrating, open hands
+            // Only ONE hand raised (right); the left stays resting low.
             handsVisible = true;
-            leftHandTargetX = -1.1; leftHandTargetY = 0.5; leftHandTargetZ = 0.9;
-            leftHandTargetRotX = -0.6; leftHandTargetRotY = 0; leftHandTargetRotZ = 0.3;
-            rightHandTargetX = 1.1; rightHandTargetY = 0.5; rightHandTargetZ = 0.9;
+            leftHandTargetX = -0.85; leftHandTargetY = -1.35; leftHandTargetZ = 0.9;
+            leftHandTargetRotX = 0; leftHandTargetRotY = 0; leftHandTargetRotZ = 0;
+            rightHandTargetX = 1.05; rightHandTargetY = 0.55; rightHandTargetZ = 0.95;
             rightHandTargetRotX = -0.6; rightHandTargetRotY = 0; rightHandTargetRotZ = -0.3;
             targetFingerCurl = [0, 0, 0, 0]; targetThumbCurl = 0;
             break;
@@ -1153,6 +1652,34 @@ function updateExpression() {
             targetEyeColor.setHex(0x00ff99);
             targetMouthColor.setHex(0x00ff99);
             break;
+
+        case EXPRESSIONS.LISTENING:
+            // Attentive: wide bright eyes, small "listening" mouth
+            targetLeftEyeScaleX = 1.15; targetLeftEyeScaleY = 1.25;
+            targetRightEyeScaleX = 1.15; targetRightEyeScaleY = 1.25;
+            targetLeftEyePosY = 0.22; targetRightEyePosY = 0.22;
+            targetMouthScaleX = 0.55; targetMouthScaleY = 0.9;
+            targetMouthPosY = -0.45; targetMouthRotation = 0;
+            targetHeadTilt = 0; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.5;
+            targetEyeColor.setHex(0x00e5cc);
+            targetMouthColor.setHex(0x00e5cc);
+            break;
+
+        case EXPRESSIONS.RECORDING:
+            // Focused: slightly narrowed eyes, tiny closed mouth.
+            // Kept bright cyan — the "listening" cue is the fast spinning aura
+            // ring, not a red tint on the face/hands.
+            targetLeftEyeScaleX = 1.05; targetLeftEyeScaleY = 0.85;
+            targetRightEyeScaleX = 1.05; targetRightEyeScaleY = 0.85;
+            targetLeftEyePosY = 0.16; targetRightEyePosY = 0.16;
+            targetMouthScaleX = 0.4; targetMouthScaleY = 0.5;
+            targetMouthPosY = -0.46; targetMouthRotation = 0;
+            targetHeadTilt = 0.05; targetHeadTiltZ = 0;
+            targetGlowOpacity = 0.4;
+            targetEyeColor.setHex(0x66ffff);
+            targetMouthColor.setHex(0x66ffff);
+            break;
     }
 }
 
@@ -1227,6 +1754,11 @@ canvas.addEventListener('touchend', function(e) {
 
 // ── Animation helpers ──
 function pickNextBehavior() {
+    // Restart the state clock. Without this the auto-transition condition
+    // (stateTimer >= stateDuration) stays true on the very next frame, so the
+    // behavior re-rolls every frame — and can keep landing on IDLE, leaving
+    // Argos apparently frozen / "pending".
+    stateTimer = 0;
     // In standby mode, don't auto-move — just idle with occasional expressions
     if (standbyMode) {
         currentState = STATES.IDLE;
@@ -1263,7 +1795,8 @@ function pickNextBehavior() {
         startSpinThenWalkRandomEdge();
     } else {
         currentState = STATES.IDLE;
-        stateDuration = 2 + Math.random() * 3;
+        // Standby: rest ~7s before roaming again.
+        stateDuration = 7;
         currentExpression = EXPRESSIONS.NEUTRAL;
     }
     updateExpression();
@@ -1351,17 +1884,47 @@ function lerp(current, target, speed) {
 
 // ── Main animation loop ──
 let lastTime = performance.now();
+let lastRenderTime = 0;
 
 function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
+    // Cap to ~30 FPS. This is a floating phone overlay — 60 fps buys nothing
+    // visible here but roughly doubles GPU/CPU cost, which is what shows up as
+    // "lag" on the 3D model. dt is still measured from the last *rendered*
+    // frame, so animation speed stays correct.
+    if (now - lastRenderTime < 30) return;
     let dt = (now - lastTime) / 1000;
     lastTime = now;
+    lastRenderTime = now;
     if (dt > 0.1) dt = 0.016;
     animTime += dt;
     stateTimer += dt;
 
+    // Any exception thrown below must never stop the render loop — otherwise
+    // the robot would freeze on a blank/stale frame ("not rendering"). The
+    // catch falls through to renderer.render() at the bottom of animate().
+    try {
+
     const lerpSpeed = 8 * dt;
+
+    // ── Talking watchdog ──
+    // The Java side clears the talking state from the TTS onDone/onError
+    // callbacks. If an engine never fires them, Argos would otherwise sit in
+    // TALKING forever and never roam again — the "not moving" bug. Force back
+    // to idle after a generous ceiling.
+    if (currentState === STATES.TALKING) {
+        talkingWatchdog += dt;
+        if (talkingWatchdog > 75) {
+            talkingWatchdog = 0;
+            currentState = STATES.IDLE;
+            stateDuration = NANO_IDLE_STANDBY;
+            stateTimer = 0;
+            applyHandGesture('NONE');
+        }
+    } else {
+        talkingWatchdog = 0;
+    }
 
     // ── Idle bobbing ──
     const bob = Math.sin(animTime * 1.8) * 0.06;
@@ -1396,7 +1959,7 @@ function animate() {
             // Lens scanning effect
             lens.material.opacity = 0.5 + Math.sin(animTime * 8) * 0.3;
             lensRing.material.opacity = 0.3 + Math.sin(animTime * 6) * 0.2;
-            antennaTip.material.color.setHex(0x00ff99);
+            auraRingMat.color.setHex(0x00ff99);
             if (t >= 1.0) {
                 turnPhase = 1;
                 turnTimer = 0;
@@ -1407,8 +1970,8 @@ function animate() {
             // Scanning lens pulse
             lens.material.opacity = 0.6 + Math.sin(animTime * 10) * 0.3;
             lensRing.material.opacity = 0.4 + Math.sin(animTime * 8) * 0.2;
-            // Antenna tip blinks
-            antennaTip.material.color.setHex(
+            // Aura blinks
+            auraRingMat.color.setHex(
                 Math.sin(animTime * 5) > 0 ? 0x00ff99 : 0x004433
             );
             if (turnTimer >= turnHoldDuration) {
@@ -1428,7 +1991,7 @@ function animate() {
                 robot.rotation.y = 0;
                 lens.material.opacity = 0.8;
                 lensRing.material.opacity = 0.5;
-                antennaTip.material.color.setHex(0x00e5cc);
+                auraRingMat.color.setHex(0x00e5cc);
             }
         }
     }
@@ -1744,11 +2307,43 @@ function animate() {
             break;
 
         case STATES.TALKING:
-            // Mouth talking animation — varied syllable-like shapes
-            const talkPhase = Math.sin(animTime * 12);
-            const talkPhase2 = Math.sin(animTime * 7 + 1.5);
-            mouth.scale.y = 1 + Math.abs(talkPhase) * 1.8 + Math.abs(talkPhase2) * 0.5;
-            mouth.scale.x = 1 + Math.sin(animTime * 5) * 0.15 + Math.abs(talkPhase2) * 0.1;
+            // Mouth animation. When Java supplies word timings (onSpeakWord),
+            // drive the mouth from the word's vowel content and close it on
+            // punctuation; otherwise fall back to a generic syllable loop.
+            if (speakWordIndex > 0) {
+                if (speakPauseHold > 0) {
+                    speakPauseHold -= dt;
+                    // Punctuation pause — mouth closes (the "silence" viseme)
+                    mouth.scale.y = lerp(mouth.scale.y, 0.2, lerpSpeed * 1.4);
+                    mouth.scale.x = lerp(mouth.scale.x, 0.9, lerpSpeed);
+                } else if (speakMouthHold > 0) {
+                    speakMouthHold -= dt;
+                    // Fast flutter around the target openness — reads as speech
+                    const flutter = 0.8 + Math.sin(animTime * 26) * 0.2;
+                    mouth.scale.y = lerp(mouth.scale.y,
+                        1 + speakMouthOpen * 1.9 * flutter, lerpSpeed * 1.8);
+                    mouth.scale.x = lerp(mouth.scale.x,
+                        1 + speakMouthOpen * 0.3, lerpSpeed * 1.4);
+                } else {
+                    // Between words — drift toward a neutral part-open mouth
+                    mouth.scale.y = lerp(mouth.scale.y, 0.6, lerpSpeed * 1.5);
+                    mouth.scale.x = lerp(mouth.scale.x, 1.0, lerpSpeed);
+                }
+            } else {
+                // Fallback: no word timing available from the TTS engine
+                const talkPhase = Math.sin(animTime * 12);
+                const talkPhase2 = Math.sin(animTime * 7 + 1.5);
+                mouth.scale.y = 1 + Math.abs(talkPhase) * 1.8 + Math.abs(talkPhase2) * 0.5;
+                mouth.scale.x = 1 + Math.sin(animTime * 5) * 0.15 + Math.abs(talkPhase2) * 0.1;
+                // Cycle explaining gestures so the hands never freeze even
+                // when the TTS engine provides no word boundaries.
+                talkFallbackTimer += dt;
+                if (talkFallbackTimer > 0.9) {
+                    talkFallbackTimer = 0;
+                    var fb = ['OPEN', 'POINT', 'RAISED', 'SHRUG', 'CLAP', 'THINK'];
+                    applyHandGesture(fb[Math.floor(Math.random() * fb.length)]);
+                }
+            }
             // Eyes look slightly side to side while talking
             leftEye.position.x = -0.55 + Math.sin(animTime * 2) * 0.03;
             rightEye.position.x = 0.55 + Math.sin(animTime * 2) * 0.03;
@@ -1756,6 +2351,12 @@ function animate() {
             robot.position.y = bob + Math.sin(animTime * 6) * 0.03;
             // Floating particles
             particleMat.opacity = 0.4;
+            // Word-timed hand gestures: settle back to REST once a word's
+            // hold window expires (Java feeds words via onSpeakWord).
+            if (speakGestureHold > 0) {
+                speakGestureHold -= dt;
+                if (speakGestureHold <= 0) applyHandGesture('REST');
+            }
             break;
 
         case STATES.SPINNING:
@@ -1790,28 +2391,32 @@ function animate() {
             break;
 
         case STATES.RECORDING:
-            // Red pulsing glow — recording indicator
-            glowRing.material.color.setHex(0xff3333);
-            glowRing.material.opacity = 0.2 + Math.sin(animTime * 6) * 0.15;
-            glowRing.scale.setScalar(1.15 + Math.sin(animTime * 4) * 0.2);
-            glowRing2.material.color.setHex(0xff3333);
-            glowRing2.material.opacity = 0.1 + Math.sin(animTime * 5) * 0.08;
+            // Bright, FAST-spinning ring around the robot — no red. The aura
+            // rings spin and pulse quickly so it reads as "I'm listening".
+            auraRingMat.color.setHex(0x9dffff);
+            auraRingMat2.color.setHex(0x00e5cc);
+            auraRingMat3.color.setHex(0x00e5cc);
+            auraRingMat.opacity = 0.8 + Math.sin(animTime * 20) * 0.2;
+            auraRingMat2.opacity = 0.5 + Math.sin(animTime * 20 + 1) * 0.2;
+            auraRingMat3.opacity = 0.28 + Math.sin(animTime * 20 + 2) * 0.16;
+            auraGroup.rotation.z += dt * 3.4;               // fast spin
+            auraGroup.scale.setScalar(1.14 + Math.sin(animTime * 15) * 0.12);
+            // Bottom glow rings stay cyan (never red)
+            glowRing.material.color.setHex(0x00e5cc);
+            glowRing.material.opacity = 0.25 + Math.sin(animTime * 10) * 0.18;
+            glowRing.scale.setScalar(1.15 + Math.sin(animTime * 8) * 0.2);
+            glowRing2.material.color.setHex(0x00e5cc);
+            glowRing2.material.opacity = 0.14 + Math.sin(animTime * 9) * 0.1;
             // Steady attentive bob
             robot.position.y = bob + Math.sin(animTime * 4) * 0.03;
             // Slight forward lean
             robot.rotation.x = 0.06;
-            // Eyes pulse with recording rhythm
+            // Eyes pulse with the recording rhythm (kept bright cyan)
             const recPulse = Math.sin(animTime * 5);
             leftEye.scale.x = 1 + recPulse * 0.08;
             rightEye.scale.x = 1 + recPulse * 0.08;
             // Mouth subtle wave (listening)
             mouth.scale.y = 1 + Math.sin(animTime * 3) * 0.15;
-            // Override eye color to red while recording
-            currentEyeColor.lerp(new THREE.Color(0xff4444), lerpSpeed);
-            leftEye.material.color.copy(currentEyeColor);
-            rightEye.material.color.copy(currentEyeColor);
-            leftGlow.material.color.copy(currentEyeColor);
-            rightGlow.material.color.copy(currentEyeColor);
             targetGlowOpacity = 0.8;
             break;
 
@@ -1914,6 +2519,30 @@ function animate() {
     glowRing2.scale.setScalar(1 + Math.sin(animTime * 2.5 + 1) * 0.08);
     glowRing2.material.opacity = 0.04 + Math.sin(animTime * 2.5 + 1) * 0.02;
 
+    // ── Neon aura rings (concentric halo around the head) ──
+    // Breathing scale + opacity, tinted to the current expression color so the
+    // halo matches the eyes/mouth. Skipped while turning, which drives its own
+    // green scan color.
+    if (!isTurning) {
+        auraRingMat.color.copy(currentEyeColor);
+        auraRingMat2.color.copy(currentEyeColor);
+        auraRingMat3.color.copy(currentEyeColor);
+        // Fresnel rim follows the expression colour too, with a slow breathing
+        // pulse (research: emissiveIntensity = base * (1 + sin(t*0.8)*0.15)).
+        rimGlowMat.uniforms.uColor.value.copy(currentEyeColor);
+        rimGlowMat.uniforms.uIntensity.value =
+            (currentState === STATES.RECORDING ? 2.4 : 1.5) * (1 + Math.sin(animTime * 0.8) * 0.15);
+    }
+    // The RECORDING state drives its own fast-spinning, bright aura — don't
+    // stomp its rotation/scale/opacity from here.
+    if (currentState !== STATES.RECORDING) {
+        auraGroup.rotation.z = lerp(auraGroup.rotation.z, 0, 2 * dt);
+        auraGroup.scale.setScalar(1 + Math.sin(animTime * 2.5) * 0.04);
+        auraRingMat.opacity = 0.45 + Math.sin(animTime * 2.5) * 0.18;
+        auraRingMat2.opacity = 0.22 + Math.sin(animTime * 2.5 + 0.8) * 0.1;
+        auraRingMat3.opacity = 0.1 + Math.sin(animTime * 2.5 + 1.6) * 0.05;
+    }
+
     // ── Edge glow pulse ──
     edges.material.opacity = 0.3 + Math.sin(animTime * 2) * 0.1;
 
@@ -1947,6 +2576,7 @@ function animate() {
         if (currentState === STATES.GREETING) {
             currentState = STATES.IDLE;
             stateDuration = 3 + Math.random() * 5;
+            stateTimer = 0;   // restart the idle countdown
             currentExpression = EXPRESSIONS.NEUTRAL;
             updateExpression();
         } else {
@@ -1954,32 +2584,97 @@ function animate() {
         }
     }
 
-    // ── Walking movement (2D — any direction) ──
-    if (currentState === STATES.WALKING && !isDragging) {
-        const dx = walkTargetX - robotScreenX;
-        const dy = walkTargetY - robotScreenY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 4) {
-            robotScreenX = walkTargetX;
-            robotScreenY = walkTargetY;
+    // ── Idle heartbeat ──
+    // If Argos somehow sits in IDLE far longer than the standby window (a
+    // dropped transition, an interrupted walk, a stale timer) force an actual
+    // walk so the roaming can never silently stall after an interaction.
+    if (currentState === STATES.IDLE) {
+        idleHeartbeat += dt;
+        if (idleHeartbeat > 14) {
+            idleHeartbeat = 0;
+            walkRandomEdge();   // guaranteed movement, not a re-roll
+        }
+    } else {
+        idleHeartbeat = 0;
+    }
+
+    // ── Stuck-state watchdog ──
+    // Catch-all: NO state should ever persist this long. DANCING alone can hold
+    // for ACTIVITY_TIMEOUT (30s); if anything else latches (a missed
+    // transition, a wedged turn, a stale pipeline flag) Argos would appear to
+    // freeze for tens of seconds. Force a known-good idle + solid body.
+    if (currentState !== lastStuckState) {
+        lastStuckState = currentState;
+        stateStuckTimer = 0;
+    } else {
+        stateStuckTimer += dt;
+        if (stateStuckTimer > 45) {
+            stateStuckTimer = 0;
             currentState = STATES.IDLE;
-            stateDuration = 3 + Math.random() * 4;
-        } else {
-            const step = walkSpeed * dt;
-            if (dist < step) {
-                robotScreenX = walkTargetX;
-                robotScreenY = walkTargetY;
+            stateDuration = NANO_IDLE_STANDBY;
+            stateTimer = 0;
+            isTurning = false;
+            isTeleporting = false;
+            nanoPhase = 'assembled';
+            nanoProgress = 0;
+            nanoTimer = 0;
+            nanoMat.opacity = 0;
+            robot.visible = true;
+            handsGroup.visible = true;
+            applyHandGesture('NONE');
+        }
+    }
+
+    // ── Walking movement (2D — any direction) ──
+    // Gated by the nanotech phase machine: the body dissolves in place, the
+    // window glides while it is a particle cloud, then the body reassembles at
+    // the destination.
+    if (currentState === STATES.WALKING && !isDragging) {
+        if (nanoPhase === 'assembled') {
+            // Respect the post-speech cooldown. (Argos cannot be TALKING here —
+            // walks only start from IDLE, which is only reached once speech has
+            // ended — but the cooldown stops an immediate re-dissolve.)
+            if (nanoCooldown > 0) {
+                // Retry soon rather than resetting a full 8s standby, which
+                // could chain into a long "Argos isn't moving" gap.
+                currentState = STATES.IDLE;
+                stateDuration = 1.0;
+                stateTimer = 0;
             } else {
-                robotScreenX += (dx / dist) * step;
-                robotScreenY += (dy / dist) * step;
-                facingRight = dx > 0;
+                // Choose which side the rebuild will stream in from
+                pickNanoDirection();
+                nanoPhase = 'dissolving';
+                nanoTimer = 0;
             }
         }
-        // Clamp Y to stay above keyboard
-        if (keyboardVisible && keyboardTopY > 0) {
-            const maxY = keyboardTopY - robotSize * 0.5;
-            if (robotScreenY > maxY) robotScreenY = maxY;
+
+        if (nanoPhase === 'traveling') {
+            // Time-based travel so the move always lasts at least
+            // NANO_TRAVEL_MIN seconds (never a fast zip).
+            nanoTimer += dt;
+            const t = Math.min(1, nanoTimer / nanoTravelDuration);
+            const ease = t * t * (3 - 2 * t);
+            robotScreenX = nanoTravelStartX + (walkTargetX - nanoTravelStartX) * ease;
+            robotScreenY = nanoTravelStartY + (walkTargetY - nanoTravelStartY) * ease;
+            facingRight = walkTargetX > nanoTravelStartX;
+            if (keyboardVisible && keyboardTopY > 0) {
+                const maxY = keyboardTopY - robotSize * 0.5;
+                if (robotScreenY > maxY) robotScreenY = maxY;
+            }
+            if (t >= 1) {
+                robotScreenX = walkTargetX;
+                robotScreenY = walkTargetY;
+                nanoPhase = 'reforming';
+                nanoTimer = 0;
+            }
         }
+        // 'dissolving' / 'reforming': hold position while the body breaks apart
+        // or rebuilds.
+    } else if (nanoPhase === 'dissolving' || nanoPhase === 'traveling') {
+        // Walk was interrupted (dragged, state changed) — always rebuild the
+        // body rather than leaving it as a particle cloud.
+        nanoPhase = 'reforming';
+        nanoTimer = 0;
     }
 
     // ── Teleport/Blink animation ──
@@ -2034,8 +2729,15 @@ function animate() {
                 robot.traverse(function(child) {
                     if (child.material) child.material.opacity = 0.3;
                 });
+                // Make sure the body is solid again in case a dissolve was
+                // mid-flight when the teleport began.
+                robot.visible = true;
+                handsGroup.visible = true;
+                nanoPhase = 'assembled';
+                nanoProgress = 0;
+                nanoMat.opacity = 0;
                 currentState = STATES.IDLE;
-                stateDuration = 2 + Math.random() * 3;
+                stateDuration = 7;
             }
         }
         // Skip normal movement while teleporting
@@ -2058,6 +2760,63 @@ function animate() {
     const effectiveSize = robotSize * currentScale;
     if (window.JSBridge) JSBridge.onRobotPosition(robotScreenX, robotScreenY, effectiveSize);
 
+    // Reached the end of the frame without throwing
+    frameErrorCount = 0;
+
+    // ── Frozen auto-restart ──
+    // Ultimate safety net. If NOTHING has changed for a long time — the state
+    // hasn't advanced, the robot hasn't moved a pixel, and it isn't mid
+    // dissolve — the page is wedged. Reload it so Argos fully resets instead
+    // of sitting frozen. Conversational/dance states are excluded because
+    // staying still is legitimate while talking or dancing.
+    var busyState = (currentState === STATES.TALKING || currentState === STATES.THINKING ||
+                     currentState === STATES.LISTENING || currentState === STATES.RECORDING ||
+                     currentState === STATES.DANCING);
+    if (!busyState && currentState === frozenState &&
+        Math.abs(robotScreenX - frozenX) < 2 &&
+        Math.abs(robotScreenY - frozenY) < 2 &&
+        nanoProgress <= 0) {
+        frozenTimer += dt;
+        if (frozenTimer > 25) {
+            frozenTimer = 0;
+            try { location.reload(); } catch (e) {}
+        }
+    } else {
+        frozenTimer = 0;
+        frozenState = currentState;
+        frozenX = robotScreenX;
+        frozenY = robotScreenY;
+    }
+
+    } catch (err) {
+        // Swallow per-frame errors so one bad frame can't kill the animation.
+        console.error('Argos animation error:', err);
+        // But if something throws EVERY frame, the animation is effectively
+        // frozen (only renderer.render() below still runs). Detect that and
+        // hard-reset to a known-good state instead of freezing silently.
+        frameErrorCount++;
+        if (frameErrorCount > 30) {
+            frameErrorCount = 0;
+            currentState = STATES.IDLE;
+            stateDuration = NANO_IDLE_STANDBY;
+            stateTimer = 0;
+            isTurning = false;
+            isTeleporting = false;
+            nanoPhase = 'assembled';
+            nanoProgress = 0;
+            nanoMat.opacity = 0;
+            robot.visible = true;
+            handsGroup.visible = true;
+            robot.rotation.set(0, 0, 0);
+            robot.position.y = 0;
+        }
+    }
+
+    // Always advance the dissolve/reassemble effect — even if a frame above
+    // threw. Its timers and cooldown must keep ticking, otherwise Argos would
+    // appear permanently "stuck"/pending.
+    try { updateNano(dt); } catch (err2) { console.error('Argos nano error:', err2); }
+
     renderer.render(scene, camera);
 }
 
@@ -2070,6 +2829,27 @@ window.addEventListener('resize', function() {
 
 // ── Start ──
 animate();
+
+// ── DIAGNOSTIC ──
+// Periodic state dump so the Android logcat (tag "chromium", INFO:CONSOLE)
+// shows exactly what the animation state machine is doing on-device.
+setInterval(function() {
+    try {
+        var msg = 'state=' + currentState +
+            ' nanoPhase=' + nanoPhase +
+            ' progress=' + nanoProgress.toFixed(2) +
+            ' vis=' + robot.visible +
+            ' x=' + Math.round(robotScreenX) + ' y=' + Math.round(robotScreenY) +
+            ' tx=' + Math.round(walkTargetX) + ' ty=' + Math.round(walkTargetY) +
+            ' cd=' + nanoCooldown.toFixed(1) +
+            ' stuck=' + stateStuckTimer.toFixed(1) +
+            ' inv=' + invisibleTimer.toFixed(1) +
+            ' err=' + frameErrorCount +
+            ' tp=' + isTeleporting + ' turn=' + isTurning;
+        console.log('ARGOS_DIAG ' + msg);
+        if (window.JSBridge && JSBridge.onDiag) JSBridge.onDiag(msg);
+    } catch (e) { console.log('ARGOS_DIAG error ' + e); }
+}, 2000);
 
 // Start walking after a brief delay — head to a random edge
 setTimeout(function() {
