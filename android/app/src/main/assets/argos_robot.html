@@ -516,6 +516,8 @@ var frameErrorCount = 0;
 var frozenTimer = 0;
 var frozenState = '';
 var frozenX = 0, frozenY = 0;
+// Stale-drag watchdog
+var dragStaleTimer = 0;
 // Mouth viseme approximation (research: mouth openness follows vowels, and
 // punctuation maps to a short silence/closure — a period is a longer pause
 // than a comma).
@@ -664,6 +666,16 @@ const nanoMat = new THREE.PointsMaterial({
     color: 0x00e5cc, size: 0.035, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false
 });
+// Neon palette the particle cloud cycles through while it dissolves, travels
+// and rebuilds: blue → pink → yellow → green. Pre-built Color objects so the
+// per-frame update allocates nothing.
+const NANO_PALETTE = [
+    new THREE.Color(0x00aaff), // neon blue
+    new THREE.Color(0xff44cc), // neon pink
+    new THREE.Color(0xffe600), // neon yellow
+    new THREE.Color(0x00ff88)  // neon green
+];
+const NANO_PALETTE_SPEED = 1.4;  // palette steps per second
 const nanoPoints = new THREE.Points(nanoGeo, nanoMat);
 // Scene-level (not a child of robot) so robot rotation can't distort the
 // cloud; position/scale are synced to the robot each frame instead.
@@ -831,7 +843,17 @@ function updateNano(dt) {
     // Fade the particle cloud in fast as the solid body hands over to it.
     const cloudAlpha = Math.min(1, nanoProgress / 0.12);
     nanoMat.opacity = cloudAlpha;
-    nanoMat.color.copy(currentEyeColor);
+    // Colour: while the body is broken apart the cloud cycles through the neon
+    // palette (blue → pink → yellow → green); once assembled it matches the
+    // current expression colour again.
+    if (nanoPhase === 'assembled' && nanoProgress <= 0) {
+        nanoMat.color.copy(currentEyeColor);
+    } else {
+        const pt = animTime * NANO_PALETTE_SPEED;
+        const i0 = Math.floor(pt) % NANO_PALETTE.length;
+        const i1 = (i0 + 1) % NANO_PALETTE.length;
+        nanoMat.color.copy(NANO_PALETTE[i0]).lerp(NANO_PALETTE[i1], pt - Math.floor(pt));
+    }
     // Follow the robot's position + depth scale (not rotation)
     nanoPoints.position.copy(robot.position);
     nanoPoints.scale.copy(robot.scale);
@@ -1752,6 +1774,31 @@ canvas.addEventListener('touchend', function(e) {
     }
 }, { passive: false });
 
+// ── touchcancel ──
+// BUG FIX: there was no touchcancel handler. Android fires touchcancel
+// routinely (the system taking over the gesture, a parent scroll starting —
+// logcat showed "Ignored attempt to cancel a touchstart event"), and when it
+// did, isDragging / touchDown stayed TRUE forever. A stale isDragging makes
+// the walk gate `currentState === WALKING && !isDragging` never pass, so Argos
+// permanently stopped roaming — exactly the "after a couple of questions it
+// gets stuck" symptom.
+function resetTouchState() {
+    touchDown = false;
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    if (isDragging) {
+        isDragging = false;
+        if (window.JSBridge) JSBridge.onDragEnd();
+    }
+    longPressFired = false;
+}
+canvas.addEventListener('touchcancel', function(e) {
+    resetTouchState();
+}, { passive: false });
+// Some WebViews deliver a cancelled touch as a pointercancel instead.
+canvas.addEventListener('pointercancel', function(e) {
+    resetTouchState();
+});
+
 // ── Animation helpers ──
 function pickNextBehavior() {
     // Restart the state clock. Without this the auto-transition condition
@@ -1948,53 +1995,10 @@ function animate() {
         }
     }
 
-    // ── 180-degree turn animation (look at screen) ──
-    if (isTurning) {
-        turnTimer += dt;
-        if (turnPhase === 0) {
-            // Turning to face screen (0 -> PI)
-            var t = Math.min(turnTimer / turnDuration, 1.0);
-            var eased = t * t * (3 - 2 * t); // smoothstep
-            robot.rotation.y = eased * Math.PI;
-            // Lens scanning effect
-            lens.material.opacity = 0.5 + Math.sin(animTime * 8) * 0.3;
-            lensRing.material.opacity = 0.3 + Math.sin(animTime * 6) * 0.2;
-            auraRingMat.color.setHex(0x00ff99);
-            if (t >= 1.0) {
-                turnPhase = 1;
-                turnTimer = 0;
-            }
-        } else if (turnPhase === 1) {
-            // Holding — looking at screen
-            robot.rotation.y = Math.PI;
-            // Scanning lens pulse
-            lens.material.opacity = 0.6 + Math.sin(animTime * 10) * 0.3;
-            lensRing.material.opacity = 0.4 + Math.sin(animTime * 8) * 0.2;
-            // Aura blinks
-            auraRingMat.color.setHex(
-                Math.sin(animTime * 5) > 0 ? 0x00ff99 : 0x004433
-            );
-            if (turnTimer >= turnHoldDuration) {
-                turnPhase = 2;
-                turnTimer = 0;
-            }
-        } else if (turnPhase === 2) {
-            // Turning back to face user (PI -> 0)
-            var t2 = Math.min(turnTimer / turnDuration, 1.0);
-            var eased2 = t2 * t2 * (3 - 2 * t2);
-            robot.rotation.y = Math.PI * (1 - eased2);
-            lens.material.opacity = 0.8 * (1 - t2);
-            lensRing.material.opacity = 0.5 * (1 - t2);
-            if (t2 >= 1.0) {
-                isTurning = false;
-                turnPhase = 0;
-                robot.rotation.y = 0;
-                lens.material.opacity = 0.8;
-                lensRing.material.opacity = 0.5;
-                auraRingMat.color.setHex(0x00e5cc);
-            }
-        }
-    }
+    // NOTE: the 180-degree "look at screen" turn is applied AFTER the state
+    // switch below — see "Turn animation". It used to run here, where every
+    // state (IDLE/WALKING/THINKING/…) immediately overwrote robot.rotation.y,
+    // so the turn never actually showed and left the robot facing oddly.
 
     // ── Sequential expression system ──
     if (sequenceActive && expressionSequence.length > 0) {
@@ -2349,6 +2353,10 @@ function animate() {
             rightEye.position.x = 0.55 + Math.sin(animTime * 2) * 0.03;
             // Slight head bob
             robot.position.y = bob + Math.sin(animTime * 6) * 0.03;
+            // Face front while speaking. TALKING never set rotation.y, so it
+            // used to inherit whatever yaw dancing/spinning left behind — the
+            // robot would talk while facing sideways or away.
+            robot.rotation.y = lerp(robot.rotation.y, 0, lerpSpeed * 0.6);
             // Floating particles
             particleMat.opacity = 0.4;
             // Word-timed hand gestures: settle back to REST once a word's
@@ -2411,6 +2419,8 @@ function animate() {
             robot.position.y = bob + Math.sin(animTime * 4) * 0.03;
             // Slight forward lean
             robot.rotation.x = 0.06;
+            // Face front (RECORDING never set rotation.y either)
+            robot.rotation.y = lerp(robot.rotation.y, 0, lerpSpeed * 0.6);
             // Eyes pulse with the recording rhythm (kept bright cyan)
             const recPulse = Math.sin(animTime * 5);
             leftEye.scale.x = 1 + recPulse * 0.08;
@@ -2513,6 +2523,64 @@ function animate() {
             break;
     }
 
+    // ── Turn animation (180° "look at screen") ──
+    // Runs AFTER the state switch so it is authoritative: previously the
+    // switch overwrote robot.rotation.y every frame and the turn never showed.
+    if (isTurning) {
+        turnTimer += dt;
+        if (turnPhase === 0) {
+            // Turning to face screen (0 -> PI)
+            var t = Math.min(turnTimer / turnDuration, 1.0);
+            var eased = t * t * (3 - 2 * t); // smoothstep
+            robot.rotation.y = eased * Math.PI;
+            lens.material.opacity = 0.5 + Math.sin(animTime * 8) * 0.3;
+            lensRing.material.opacity = 0.3 + Math.sin(animTime * 6) * 0.2;
+            auraRingMat.color.setHex(0x00ff99);
+            if (t >= 1.0) { turnPhase = 1; turnTimer = 0; }
+        } else if (turnPhase === 1) {
+            // Holding — looking at screen
+            robot.rotation.y = Math.PI;
+            lens.material.opacity = 0.6 + Math.sin(animTime * 10) * 0.3;
+            lensRing.material.opacity = 0.4 + Math.sin(animTime * 8) * 0.2;
+            auraRingMat.color.setHex(
+                Math.sin(animTime * 5) > 0 ? 0x00ff99 : 0x004433
+            );
+            if (turnTimer >= turnHoldDuration) { turnPhase = 2; turnTimer = 0; }
+        } else if (turnPhase === 2) {
+            // Turning back to face user (PI -> 0)
+            var t2 = Math.min(turnTimer / turnDuration, 1.0);
+            var eased2 = t2 * t2 * (3 - 2 * t2);
+            robot.rotation.y = Math.PI * (1 - eased2);
+            lens.material.opacity = 0.8 * (1 - t2);
+            lensRing.material.opacity = 0.5 * (1 - t2);
+            if (t2 >= 1.0) {
+                isTurning = false;
+                turnPhase = 0;
+                robot.rotation.y = 0;
+                lens.material.opacity = 0.8;
+                lensRing.material.opacity = 0.5;
+                auraRingMat.color.setHex(0x00e5cc);
+            }
+        }
+    } else {
+        // ── Yaw normalization ──
+        // Keep yaw bounded so DANCING (up to 2π per beat) and an interrupted
+        // SPINNING can't leave the robot facing an arbitrary direction.
+        if (robot.rotation.y > Math.PI) robot.rotation.y -= Math.PI * 2;
+        else if (robot.rotation.y < -Math.PI) robot.rotation.y += Math.PI * 2;
+
+        var yawDriven = (currentState === STATES.DANCING ||
+                         currentState === STATES.SPINNING ||
+                         currentState === STATES.WALKING);
+        // Recover only a STALE large yaw (left over from dancing or an
+        // interrupted spin) — the small per-state sway is left untouched.
+        // This is what used to leave the robot sideways/backwards while
+        // TALKING, since TALKING never set rotation.y itself.
+        if (!yawDriven && Math.abs(robot.rotation.y) > 0.45) {
+            robot.rotation.y = lerp(robot.rotation.y, 0, lerpSpeed * 0.8);
+        }
+    }
+
     // ── Glow ring pulse ──
     glowRing.scale.setScalar(1 + Math.sin(animTime * 2.5) * 0.12);
     glowRing.material.opacity = 0.08 + Math.sin(animTime * 2.5) * 0.04;
@@ -2596,6 +2664,21 @@ function animate() {
         }
     } else {
         idleHeartbeat = 0;
+    }
+
+    // ── Stale-drag watchdog ──
+    // isDragging gates ALL walking. If it is ever left set (a cancelled
+    // gesture, or Java's drag flag never cleared), Argos stops roaming
+    // forever. Clear it once no touch is down and it has been set a while.
+    if (isDragging) {
+        dragStaleTimer += dt;
+        if (!touchDown && dragStaleTimer > 5) {
+            dragStaleTimer = 0;
+            isDragging = false;
+            if (window.JSBridge) JSBridge.onDragEnd();
+        }
+    } else {
+        dragStaleTimer = 0;
     }
 
     // ── Stuck-state watchdog ──
@@ -2845,11 +2928,12 @@ setInterval(function() {
             ' stuck=' + stateStuckTimer.toFixed(1) +
             ' inv=' + invisibleTimer.toFixed(1) +
             ' err=' + frameErrorCount +
+            ' drag=' + isDragging + ' down=' + touchDown +
             ' tp=' + isTeleporting + ' turn=' + isTurning;
         console.log('ARGOS_DIAG ' + msg);
         if (window.JSBridge && JSBridge.onDiag) JSBridge.onDiag(msg);
     } catch (e) { console.log('ARGOS_DIAG error ' + e); }
-}, 2000);
+}, 5000);
 
 // Start walking after a brief delay — head to a random edge
 setTimeout(function() {

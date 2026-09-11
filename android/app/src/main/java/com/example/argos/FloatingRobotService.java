@@ -83,15 +83,16 @@ public class FloatingRobotService extends Service {
     private boolean positionInitialized = false;
 
     // ── Freeze auto-restart ──
-    // If the WebView reports no movement for a long stretch (a wedged JS
-    // animation loop), reload the page so Argos fully resets instead of
-    // sitting frozen. Tracks the last position and when it last changed.
+    // The JS animation loop sends a liveness heartbeat (JSBridge.onDiag) every
+    // few seconds. If those stop arriving while Argos is idle, the WebView is
+    // genuinely wedged and gets reloaded.
     private float m_lastPosX = -1f, m_lastPosY = -1f;
     private long m_lastMoveTime = System.currentTimeMillis();
+    private long m_lastAliveTime = System.currentTimeMillis();
     private final android.os.Handler m_freezeHandler =
         new android.os.Handler(android.os.Looper.getMainLooper());
     private Runnable m_freezeCheck;
-    private static final long FREEZE_TIMEOUT_MS = 35000;
+    private static final long FREEZE_TIMEOUT_MS = 30000;
     // Keyboard detection
     private boolean keyboardVisible = false;
     private float savedRobotY = 0;
@@ -162,7 +163,12 @@ public class FloatingRobotService extends Service {
     private boolean wakeWordListening = false;
     private boolean wakeWordEnabled = true;
     private final android.os.Handler wakeWordHandler = new android.os.Handler();
-    private static final int WAKE_WORD_RESTART_DELAY_MS = 1000; // restart after errors
+    // Restart delay after a wake-word recognizer error. The SpeechRecognizer
+    // times out after a few seconds of silence, so this loops forever; 1s was
+    // aggressive enough that the constant stop/start binder traffic to the
+    // recognition service showed up as main-thread jank (the 3D robot
+    // stuttering). 3s keeps it responsive without the churn.
+    private static final int WAKE_WORD_RESTART_DELAY_MS = 3000;
     private static final String WAKE_WORD = "argos";
     // Argos file manager — dedicated folder for AI-created notes/files
     private ArgosFileManager fileManager;
@@ -477,6 +483,18 @@ public class FloatingRobotService extends Service {
                     longPressHandler.removeCallbacks(longPressRunnable[0]);
                     longPressRunnable[0] = null;
                 }
+                // BUG FIX: ACTION_CANCEL used to only cancel the long-press
+                // timer. If the gesture was cancelled mid-drag, isDragging
+                // stayed TRUE on both the Java and the JS side, and the JS walk
+                // gate (WALKING && !isDragging) could never pass again — Argos
+                // permanently stopped roaming. Reset the drag state here.
+                if (isDragging) {
+                    isDragging = false;
+                    if (robotWebView != null) {
+                        robotWebView.evaluateJavascript("ArgosJS.setDragging(false);", null);
+                    }
+                }
+                javaLongPressFired[0] = false;
             }
             return false; // Let WebView handle touch for tap detection
         });
@@ -1003,8 +1021,11 @@ public class FloatingRobotService extends Service {
             }
             // Strip [TOOL:...] tags from displayed response
             String clean = stripToolTags(response);
-            // Execute any tool commands in the response
-            executeToolTags(response);
+            // Execute any tool commands in the response.
+            // Off the UI thread — tools can block for seconds (OCR, content
+            // resolvers, disk I/O) and would otherwise freeze the 3D robot.
+            final String toolsResponse = response;
+            new Thread(() -> executeToolTags(toolsResponse), "argos-tools").start();
             // Fallback: if no EXPR tag was found, set NEUTRAL so robot always reacts
             if (!response.contains("[TOOL:EXPR:") && !response.contains("[TOOL:EXPRSEQ:")) {
                 if (robotWebView != null) {
@@ -2131,8 +2152,10 @@ public class FloatingRobotService extends Service {
             }
             if (m_tts == null || !m_ttsReady) {
                 initTTS();
-                // Wait briefly for init
-                try { Thread.sleep(500); } catch (Exception e) {}
+                // NO Thread.sleep here. This runs on the main thread and the
+                // old 500ms sleep froze the whole UI (including the 3D robot)
+                // on every reply. The pending-speech queue below handles the
+                // not-ready case instead.
             }
             if (m_tts == null || !m_ttsReady) {
                 // Engine still loading — this is the common FIRST-use case and
@@ -2505,11 +2528,30 @@ public class FloatingRobotService extends Service {
 
     // ── Task Scheduling and Tool Execution ──
 
+    // Main-thread-safe JS evaluation. executeToolTags() now runs on a
+    // background thread (many tools do PackageManager / ContentResolver /
+    // file I/O / screenshot+OCR work), and WebView methods may only be called
+    // from the thread that created the WebView.
+    private void evalJs(final String js) {
+        android.os.Handler handler = new android.os.Handler(getMainLooper());
+        handler.post(() -> {
+            if (robotWebView != null) {
+                robotWebView.evaluateJavascript(js, null);
+            }
+        });
+    }
+
     // Parse and execute [TOOL:...] tags from AI response
     // NOTE: Most tools are now handled by the C++ tool loop (agent_client_core.cpp)
     // which executes tools and feeds results back to the AI for multi-step reasoning.
     // Only Java-only tools (EXPR, EXPRSEQ, LOOK, PASTE, COPY, SCHEDULE, OPEN, TYPE)
     // are handled here since they need direct access to the Android UI/WebView.
+    //
+    // MUST be called OFF the main thread: several tools block for seconds
+    // (svc.observeScreen() takes a screenshot + runs OCR, listInstalledApps()
+    // and the calendar/contacts queries hit ContentResolver, and the file tools
+    // do disk I/O). Running them on the UI thread froze the WebView, which is
+    // exactly what made Argos appear "stuck" right after a task.
     private void executeToolTags(String response) {
         java.util.regex.Pattern toolPattern = java.util.regex.Pattern.compile("\\[TOOL:([^\\]]+)\\]");
         java.util.regex.Matcher matcher = toolPattern.matcher(response);
@@ -2611,10 +2653,7 @@ public class FloatingRobotService extends Service {
         } else if (tool.startsWith("EXPR:")) {
             // Single expression: EXPR:HAPPY or EXPR:SURPRISED
             String expr = tool.substring(5).trim();
-            if (robotWebView != null) {
-                robotWebView.evaluateJavascript(
-                    "if(window.ArgosJS){ArgosJS.setExpression('" + expr + "');}", null);
-            }
+            evalJs("if(window.ArgosJS){ArgosJS.setExpression('" + expr + "');}");
         } else if (tool.startsWith("EXPRSEQ:")) {
             // Expression sequence: EXPRSEQ:[{"expr":"HAPPY","duration":1.5},{"expr":"EXCITED","duration":1.0}]
             String seqJson = tool.substring(8).trim();
@@ -2622,10 +2661,7 @@ public class FloatingRobotService extends Service {
         } else if (tool.startsWith("HAND:")) {
             // Hand gesture: HAND:WAVE, HAND:POINT, HAND:HEART, etc.
             String gesture = tool.substring(5).trim();
-            if (robotWebView != null) {
-                robotWebView.evaluateJavascript(
-                    "if(window.ArgosJS){ArgosJS.setHandGesture('" + gesture + "');}", null);
-            }
+            evalJs("if(window.ArgosJS){ArgosJS.setHandGesture('" + gesture + "');}");
         } else if (tool.equals("LOOK")) {
             // Trigger 180-degree turn to look at screen
             robotLookAtScreen();
@@ -4976,20 +5012,21 @@ public class FloatingRobotService extends Service {
     }
 
     // ── Freeze auto-restart ──
-    // Runs every 10s. If the WebView has reported no movement for
-    // FREEZE_TIMEOUT_MS while Argos is idle (not talking, not in standby, not
-    // being dragged), the JS animation loop is wedged — reload the page so the
-    // robot fully resets rather than sitting frozen forever.
+    // Runs every 10s. Fires only when the JS has stopped sending its liveness
+    // heartbeat — i.e. the animation loop is genuinely wedged — rather than
+    // merely when the robot is standing still (normal while idle or dancing).
+    // A blunt "no movement" check here caused needless WebView reloads.
     private void startFreezeWatchdog() {
+        m_lastAliveTime = System.currentTimeMillis();
         m_freezeCheck = new Runnable() {
             @Override
             public void run() {
                 try {
                     boolean busy = voicePipelineActive || standbyMode || isDragging || !screenOn;
                     if (!busy && robotWebView != null &&
-                        System.currentTimeMillis() - m_lastMoveTime > FREEZE_TIMEOUT_MS) {
-                        android.util.Log.w("Argos", "Robot frozen — reloading WebView to reset");
-                        m_lastMoveTime = System.currentTimeMillis();
+                        System.currentTimeMillis() - m_lastAliveTime > FREEZE_TIMEOUT_MS) {
+                        android.util.Log.w("Argos", "Robot JS heartbeat lost — reloading WebView");
+                        m_lastAliveTime = System.currentTimeMillis();
                         robotWebView.reload();
                     }
                 } catch (Exception e) {}
@@ -5311,13 +5348,14 @@ public class FloatingRobotService extends Service {
                     liveTranscriptDoneSignal.await(800, java.util.concurrent.TimeUnit.MILLISECONDS);
                 } catch (InterruptedException e) {}
                 liveTranscriptDoneSignal = null;
-                // Only destroy if it hasn't been replaced by a new session
-                if (liveTranscriptRecognizer == recognizerToDestroy) {
-                    try { recognizerToDestroy.destroy(); } catch (Exception e) {}
-                    liveTranscriptRecognizer = null;
-                }
-                // Hide the bubble and invoke callback on main thread
+                // Destroy on the MAIN thread — SpeechRecognizer methods may only
+                // be called from the thread that created it, and destroy() from
+                // a worker thread throws (leaking the bound recognition service).
                 new android.os.Handler(getMainLooper()).post(() -> {
+                    if (liveTranscriptRecognizer == recognizerToDestroy) {
+                        try { recognizerToDestroy.destroy(); } catch (Exception e) {}
+                        liveTranscriptRecognizer = null;
+                    }
                     hideLiveTranscriptionBubble();
                     if (onComplete != null) onComplete.run();
                 });
@@ -5503,8 +5541,11 @@ public class FloatingRobotService extends Service {
         // Collapse whitespace left behind by removed tags
         clean = clean.replaceAll("\\s+", " ").trim();
 
-        // Execute tool tags (EXPR, HAND, OPEN, etc.) so the robot reacts
-        executeToolTags(rawReply);
+        // Execute tool tags (EXPR, HAND, OPEN, etc.) so the robot reacts.
+        // Off the UI thread — tools can block for seconds (OCR, content
+        // resolvers, disk I/O) and would otherwise freeze the 3D robot.
+        final String toolsReply = rawReply;
+        new Thread(() -> executeToolTags(toolsReply), "argos-tools").start();
 
         // Fallback: if no EXPR tag was found, set NEUTRAL so robot always reacts
         if (!rawReply.contains("[TOOL:EXPR:") && !rawReply.contains("[TOOL:EXPRSEQ:")) {
@@ -6084,10 +6125,14 @@ public class FloatingRobotService extends Service {
             });
         }
 
-        // Robot-side diagnostics → logcat (tag "ArgosDiag"). More reliable than
-        // WebView console logging, which a custom WebChromeClient can suppress.
+        // Robot-side diagnostics → logcat (tag "ArgosDiag") and a liveness
+        // signal for the freeze watchdog. The JS sends this every few seconds,
+        // so a *missing* heartbeat means the animation loop is genuinely dead —
+        // much more precise than "the robot hasn't moved", which is normal
+        // while idle or dancing.
         @JavascriptInterface
         public void onDiag(String msg) {
+            m_lastAliveTime = System.currentTimeMillis();
             android.util.Log.i("ArgosDiag", msg);
         }
 
@@ -6150,7 +6195,11 @@ public class FloatingRobotService extends Service {
 
         @JavascriptInterface
         public void onDragEnd() {
-            // Handled in touch listener
+            // BUG FIX: this used to be a no-op, so the JS-side stale-drag
+            // watchdog (and any touchcancel) could not clear Java's drag flag.
+            // A stuck isDragging permanently blocks roaming.
+            android.os.Handler h = new android.os.Handler(getMainLooper());
+            h.post(() -> { isDragging = false; });
         }
 
         @JavascriptInterface
