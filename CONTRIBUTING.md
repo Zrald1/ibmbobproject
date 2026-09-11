@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Argos! This document outlines the
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/your-feature-name`
 3. Make your changes
-4. Test thoroughly on a real device (emulators are blocked by the security layer)
+4. Test thoroughly on a real device
 5. Commit with a clear message: `git commit -m "feat: add your feature"`
 6. Push: `git push origin feature/your-feature-name`
 7. Open a Pull Request
@@ -25,17 +25,10 @@ Use conventional commits:
 
 - `feat:` new feature
 - `fix:` bug fix
-- `security:` security improvement
 - `refactor:` code restructuring
 - `docs:` documentation only
 - `test:` test additions
-
-## Security Considerations
-
-- **Never** commit API keys, secrets, or credentials
-- **Never** weaken security checks (root detection, pirate app detection, etc.)
-- Report security vulnerabilities privately — see [SECURITY.md](SECURITY.md)
-- Test changes against rooted devices, emulators, and pirate apps
+- `chore:` build/tooling changes
 
 ## Pull Request Checklist
 
@@ -49,7 +42,6 @@ Use conventional commits:
 
 - Additional language support for UI strings
 - New tool implementations for the AI agent
-- Security hardening improvements
 - UI/UX enhancements
 - Performance optimizations
 - Bug fixes
