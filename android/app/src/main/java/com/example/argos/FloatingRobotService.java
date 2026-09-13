@@ -60,6 +60,10 @@ public class FloatingRobotService extends Service {
     private boolean bubbleVisible = false;
     private boolean chatInProgress = false;
 
+    // Last message sent by the user (text chat path). Kept so onChatError
+    // can generate a local fallback reply instead of showing a raw error.
+    private String lastChatMessage = "";
+
     private WindowManager.LayoutParams robotParams;
     private WindowManager.LayoutParams bubbleParams;
     private int layoutType;
@@ -106,6 +110,9 @@ public class FloatingRobotService extends Service {
 
     // Backend connection
     private String backendUrl = ""; // e.g. "https://your-backend.example.com"
+    // Fallback VPS backend (Java Spring Boot) — tried when the primary
+    // Python backend is unreachable or returns an error.
+    private String fallbackBackendUrl = "";
     private boolean voicePipelineActive = false;
     private boolean isRecording = false;
     private android.media.AudioRecord m_audioRecord = null;
@@ -227,6 +234,13 @@ public class FloatingRobotService extends Service {
                 String url = info.metaData.getString("argos.backend_url");
                 if (url != null && !url.isEmpty()) {
                     setBackendUrl(url);
+                }
+                String fallbackUrl = info.metaData.getString("argos.fallback_backend_url");
+                if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
+                    if (fallbackUrl.endsWith("/")) {
+                        fallbackUrl = fallbackUrl.substring(0, fallbackUrl.length() - 1);
+                    }
+                    fallbackBackendUrl = fallbackUrl;
                 }
             }
         } catch (Exception e) {
@@ -800,6 +814,7 @@ public class FloatingRobotService extends Service {
 
         addMessage("You: " + text, Color.rgb(200, 200, 210));
 
+        lastChatMessage = text;
         sendNativeChat(text);
         notifyRobotThinking();
     }
@@ -1141,7 +1156,11 @@ public class FloatingRobotService extends Service {
             if (robotWebView != null) {
                 robotWebView.evaluateJavascript("if(window.ArgosJS){ArgosJS.setThinking(false);}", null);
             }
-            addMessage("Error: " + error, Color.rgb(255, 100, 100));
+            // Instead of showing a raw error, try the local offline fallback
+            // so the user still gets a helpful reply (and tool actions like
+            // "open settings" still work when the backend is down).
+            String fallback = getLocalFallbackResponse(lastChatMessage);
+            onChatResponse(fallback);
         });
     }
 
@@ -1513,6 +1532,91 @@ public class FloatingRobotService extends Service {
             "Long-press me for more options!"
         };
         return thoughts[(int) (Math.random() * thoughts.length)];
+    }
+
+    // ── Offline chat fallback ──
+    // When the backend (or the C++ native engine) is unreachable or returns
+    // an error, we don't just show "Error: …" and leave the user stuck.
+    // Instead we recognise a handful of simple, high-value commands and
+    // reply with a helpful message plus the same [TOOL:...] tags that
+    // executeToolTags() already parses. This is a port of the Java
+    // FallbackService from PR #2, adapted to emit tool tags instead of
+    // ActionDto and to require no database.
+    private String getLocalFallbackResponse(String message) {
+        if (message == null) message = "";
+        String original = message.trim();
+        String normalized = original.toLowerCase();
+
+        // "open <app>" — resolve a few well-known system apps directly,
+        // otherwise search Google for the app name.
+        if (normalized.startsWith("open ")) {
+            String appName = original.substring(5).trim();
+            if (appName.isEmpty()) {
+                return "Please tell me which app you want to open. For example: open Spotify. [TOOL:EXPR:NEUTRAL]";
+            }
+            String pkg = resolveKnownPackage(appName.toLowerCase());
+            if (pkg != null) {
+                return "Opening that for you. [TOOL:OPEN:" + pkg + "] [TOOL:EXPR:HAPPY]";
+            }
+            return "I'm in offline mode, but I can search for that app for you. [TOOL:SEARCH:" + appName + " app] [TOOL:EXPR:NEUTRAL]";
+        }
+
+        // "call <contact>" — search the user's contacts for the name.
+        if (normalized.startsWith("call ")) {
+            String contact = original.substring(5).trim();
+            if (contact.isEmpty()) {
+                return "Please tell me whom you want to call. For example: call Mom. [TOOL:EXPR:NEUTRAL]";
+            }
+            return "I can't reach the AI service, but I found matching contacts. [TOOL:CONTACTS:" + contact + "] [TOOL:EXPR:NEUTRAL]";
+        }
+
+        // "message" / "send sms" / "send message"
+        if (normalized.startsWith("message ")
+                || normalized.startsWith("send sms ")
+                || normalized.startsWith("send message ")) {
+            return "I'm in offline assistance mode. I can help draft a message once the AI service reconnects. Please try again in a moment. [TOOL:EXPR:NEUTRAL]";
+        }
+
+        // alarm / reminder
+        if (normalized.contains("alarm")
+                || normalized.contains("remind me")
+                || normalized.contains("reminder")) {
+            return "I can prepare an alarm or reminder once the AI service reconnects. Please try again in a moment. [TOOL:EXPR:NEUTRAL]";
+        }
+
+        // settings
+        if (normalized.contains("settings")) {
+            return "Opening Android settings for you. [TOOL:OPEN:com.android.settings] [TOOL:EXPR:NEUTRAL]";
+        }
+
+        // generic fallback
+        return "The primary AI service is currently unavailable. "
+                + "Argos is still running in offline assistance mode. "
+                + "Try commands such as: open Spotify, call Mom, "
+                + "send a message, or set an alarm. [TOOL:EXPR:SAD]";
+    }
+
+    // Map common app names to their Android package names so the offline
+    // fallback can open them directly without the LLM. Keep this small —
+    // only apps whose package name is stable across all Android devices.
+    private String resolveKnownPackage(String appName) {
+        if (appName == null) return null;
+        switch (appName) {
+            case "settings": return "com.android.settings";
+            case "phone": case "dialer": return "com.android.dialer";
+            case "contacts": return "com.android.contacts";
+            case "messages": case "sms": return "com.google.android.apps.messaging";
+            case "camera": return "com.android.camera";
+            case "calculator": return "com.android.calculator2";
+            case "clock": case "alarm": return "com.android.deskclock";
+            case "calendar": return "com.android.calendar";
+            case "gallery": case "photos": return "com.android.gallery3d";
+            case "files": case "file manager": return "com.android.documentsui";
+            case "browser": case "chrome": return "com.android.chrome";
+            case "email": case "gmail": return "com.google.android.gm";
+            case "maps": return "com.google.android.apps.maps";
+            default: return null;
+        }
     }
 
     private String callBackendForThought(String prompt) {
@@ -5481,11 +5585,12 @@ public class FloatingRobotService extends Service {
                         if (json.has("detail")) errMsg = json.optString("detail");
                         else if (json.has("error")) errMsg = json.optString("error");
                         if (errMsg != null && !errMsg.isEmpty()) {
+                            // Backend returned an error — use the local
+                            // offline fallback so voice commands like "open
+                            // settings" still work when the AI is down.
                             cancelVoiceWatchdog();
-                            voicePipelineActive = false;
-                            addMessage("Argos error: " + errMsg, Color.rgb(255, 100, 100));
-                            robotSetState("idle");
-                            resumeWakeWordDetection();
+                            String fallback = getLocalFallbackResponse(message);
+                            displayAndSpeakVoiceReply(fallback, message);
                             return;
                         }
                         String reply = json.optString("response", "");
@@ -5520,11 +5625,11 @@ public class FloatingRobotService extends Service {
                 android.os.Handler mainHandler = new android.os.Handler(getMainLooper());
                 mainHandler.post(() -> {
                     if (myGeneration != pipelineGeneration) return;
+                    // Backend unreachable — use the local offline fallback
+                    // so the user still gets a spoken reply and tool actions.
                     cancelVoiceWatchdog();
-                    voicePipelineActive = false;
-                    addMessage("Argos error: " + e.getMessage(), Color.rgb(255, 100, 100));
-                    robotSetState("idle");
-                    resumeWakeWordDetection();
+                    String fallback = getLocalFallbackResponse(message);
+                    displayAndSpeakVoiceReply(fallback, message);
                 });
             }
         }).start();
@@ -5629,7 +5734,26 @@ public class FloatingRobotService extends Service {
     // Returns the raw response body. Throws Exception with a meaningful message
     // (including the backend's error detail) for non-2xx HTTP responses so the
     // caller can surface the failure instead of silently showing no reply.
+    //
+    // If the primary Python backend fails, this automatically retries against
+    // the Java fallback VPS (fallbackBackendUrl) and normalizes the response.
     private String sendTextToBackend(String message) throws Exception {
+        try {
+            return sendTextToPrimaryBackend(message);
+        } catch (Exception primaryError) {
+            if (fallbackBackendUrl != null && !fallbackBackendUrl.isEmpty()) {
+                try {
+                    return sendTextToFallbackBackend(message);
+                } catch (Exception fallbackError) {
+                    throw primaryError;
+                }
+            }
+            throw primaryError;
+        }
+    }
+
+    // Send text to the primary Python backend (/api/chat).
+    private String sendTextToPrimaryBackend(String message) throws Exception {
         java.net.URL url = new java.net.URL(backendUrl + "/api/chat");
         java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
@@ -5696,6 +5820,77 @@ public class FloatingRobotService extends Service {
         return body;
     }
 
+    // Send text to the Java fallback VPS backend (/api/chat via nginx /java/
+    // proxy). The Java backend has a different request schema (deviceId
+    // required, no history array) and response schema (reply field instead
+    // of response). This method adapts both so the caller sees a normal
+    // Python-style {"response": "..."} body.
+    private String sendTextToFallbackBackend(String message) throws Exception {
+        java.net.URL url = new java.net.URL(fallbackBackendUrl + "/api/chat");
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("User-Agent", "Argos-Android/3.29.6");
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(30000);
+        conn.setDoOutput(true);
+
+        // Java backend ChatRequest requires deviceId and message.
+        org.json.JSONObject jsonBody = new org.json.JSONObject();
+        jsonBody.put("message", message);
+        jsonBody.put("deviceId", "argos-android");
+        String screenCtx = getCurrentScreenContext();
+        if (screenCtx != null && !screenCtx.isEmpty()) {
+            jsonBody.put("screenContext", screenCtx);
+        }
+
+        java.io.OutputStream os = conn.getOutputStream();
+        os.write(jsonBody.toString().getBytes("UTF-8"));
+        os.flush();
+        os.close();
+
+        int code = conn.getResponseCode();
+        java.io.InputStream is;
+        if (code >= 400) {
+            is = conn.getErrorStream();
+        } else {
+            is = conn.getInputStream();
+        }
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        if (is != null) {
+            byte[] buf = new byte[4096];
+            int len;
+            while ((len = is.read(buf)) != -1) baos.write(buf, 0, len);
+            is.close();
+        }
+        conn.disconnect();
+        String body = baos.toString("UTF-8");
+
+        if (code >= 400) {
+            String reason = body;
+            try {
+                org.json.JSONObject errJson = new org.json.JSONObject(body);
+                if (errJson.has("message")) reason = errJson.optString("message");
+                else if (errJson.has("detail")) reason = errJson.optString("detail");
+            } catch (Exception e) {
+                if (reason.length() > 200) reason = reason.substring(0, 200);
+            }
+            throw new Exception("Fallback HTTP " + code + ": " + reason);
+        }
+
+        // Normalize: Java returns {"success":true,"source":"fallback",
+        // "reply":"...", "action":{...}, "retrySuggested":true}
+        // Convert to Python shape: {"response": "..."}
+        org.json.JSONObject javaResp = new org.json.JSONObject(body);
+        String reply = javaResp.optString("reply", "");
+        if (reply.isEmpty()) {
+            throw new Exception("Fallback returned empty reply");
+        }
+        org.json.JSONObject normalized = new org.json.JSONObject();
+        normalized.put("response", reply);
+        return normalized.toString();
+    }
+
     // Get current screen context for the AI (empty if privacy mode)
     private String getCurrentScreenContext() {
         try {
@@ -5749,15 +5944,25 @@ public class FloatingRobotService extends Service {
                         String errMsg = null;
                         if (json.has("error")) errMsg = json.optString("error");
                         else if (json.has("detail")) errMsg = json.optString("detail");
+                        String transcribed = json.optString("transcribed", "");
                         if (errMsg != null && !errMsg.isEmpty()) {
+                            // Backend returned an error — if we have
+                            // transcribed text, use the local offline fallback
+                            // so voice commands still work. Otherwise just
+                            // show the error.
                             cancelVoiceWatchdog();
-                            voicePipelineActive = false;
-                            addMessage("Argos error: " + errMsg, Color.rgb(255, 100, 100));
-                            robotSetState("idle");
-                            resumeWakeWordDetection();
+                            if (!transcribed.isEmpty()) {
+                                addMessage("You: " + transcribed, Color.rgb(200, 200, 210));
+                                String fallback = getLocalFallbackResponse(transcribed);
+                                displayAndSpeakVoiceReply(fallback, transcribed);
+                            } else {
+                                voicePipelineActive = false;
+                                addMessage("Argos error: " + errMsg, Color.rgb(255, 100, 100));
+                                robotSetState("idle");
+                                resumeWakeWordDetection();
+                            }
                             return;
                         }
-                        String transcribed = json.optString("transcribed", "");
                         String reply = json.optString("response", "");
                         if (reply.isEmpty()) reply = json.optString("reply", "");
 

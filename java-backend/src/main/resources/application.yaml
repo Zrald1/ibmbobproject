@@ -3,18 +3,22 @@ spring:
     name: argos-backend
 
   datasource:
-    url: jdbc:mysql://localhost:3306/argos_db?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
-    username: root
-    password: Famya$3110
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:h2:mem:argos_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
 
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
+
+  h2:
+    console:
+      enabled: false
 
   servlet:
     multipart:

@@ -2,5 +2,6 @@
     <string name="app_name">Argos</string>
     <string name="accessibility_service_label">Argos screen assistant</string>
     <string name="accessibility_service_description">Argos uses accessibility to read screen content, interact with browser pages, and help you navigate your device. This allows Argos to see text on screen, click links, type text, and scroll pages on your behalf. You can turn this service off at any time in Accessibility settings.</string>
-    <string name="backend_url">http://13.229.100.183:8000</string>
+    <string name="backend_url">http://47.129.187.134</string>
+    <string name="fallback_backend_url">http://47.129.187.134/java</string>
 </resources>
