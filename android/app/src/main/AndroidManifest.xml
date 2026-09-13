@@ -83,6 +83,10 @@
             android:name="argos.backend_url"
             android:value="@string/backend_url" />
 
+        <meta-data
+            android:name="argos.fallback_backend_url"
+            android:value="@string/fallback_backend_url" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -105,6 +109,9 @@
             <meta-data
                 android:name="argos.backend_url"
                 android:value="@string/backend_url" />
+            <meta-data
+                android:name="argos.fallback_backend_url"
+                android:value="@string/fallback_backend_url" />
         </service>
 
         <service
