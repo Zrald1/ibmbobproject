@@ -27,6 +27,13 @@
 *.pyc
 __pycache__/
 
+# ── Private desktop app — never publish ──
+# Argos Desktop is a local-only, private build. It is intentionally excluded
+# from this public repository in full (source, build output and binaries).
+/argos-desktop/
+**/argos-desktop/
+argos-desktop*.zip
+
 # ── Secrets and credentials — NEVER commit ──
 *.env
 .env
