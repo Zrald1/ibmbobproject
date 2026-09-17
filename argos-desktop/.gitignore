@@ -1,0 +1,22 @@
+# Build output
+/build/
+/out/
+/bin/
+*.exe
+*.pdb
+*.ilk
+*.obj
+
+# vcpkg project-local tree
+/vcpkg_installed/
+
+# IDE
+/.vs/
+/.vscode/
+*.user
+
+# Local runtime data — never commit (keys live in %APPDATA%, not here)
+*.log
+/tmp/
+/secrets/
+argos_config.txt

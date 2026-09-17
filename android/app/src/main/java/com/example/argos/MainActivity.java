@@ -196,6 +196,21 @@ public class MainActivity extends Activity {
             proceedToSetup();
         });
 
+        // Secondary entry: pair this phone with an Argos Desktop.
+        Button desktopBtn = new Button(this);
+        desktopBtn.setText("Connect to Argos Desktop");
+        desktopBtn.setTextColor(Color.BLACK);
+        desktopBtn.setBackgroundColor(Color.rgb(230, 230, 230));
+        desktopBtn.setPadding(0, 24, 0, 24);
+        desktopBtn.setTextSize(15f);
+        LinearLayout.LayoutParams desktopParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        desktopParams.topMargin = 16;
+        root.addView(desktopBtn, desktopParams);
+
+        desktopBtn.setOnClickListener(v ->
+            startActivity(new Intent(this, DesktopConnectActivity.class)));
+
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.addView(root);
         setContentView(scroll);

@@ -99,6 +99,12 @@
             </intent-filter>
         </activity>
 
+        <!-- QR pairing + desktop task screen -->
+        <activity
+            android:name=".DesktopConnectActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <service
             android:name=".FloatingRobotService"
             android:exported="false"
