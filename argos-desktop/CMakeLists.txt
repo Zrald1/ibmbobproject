@@ -81,6 +81,8 @@ target_link_libraries(argos PRIVATE
     ws2_32
     iphlpapi
     bcrypt
+    # Voice capture (waveIn)
+    winmm
     # CreateDispatcherQueueController (required by WebView2 visual hosting)
     CoreMessaging
 )

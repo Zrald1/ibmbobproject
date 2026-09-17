@@ -7,6 +7,7 @@
 #include "core/config.h"
 #include "core/log.h"
 #include "tools/tools.h"
+#include "voice/voice.h"
 
 namespace argos::commands {
 
@@ -42,6 +43,13 @@ json dispatch(const std::string& method, const json& params) {
 
     if (method == "tools.list")
         return {{"ok", true}, {"result", tools::schemas()}};
+
+    // "voice.listen" — toggle mic listening (same as double-clicking the
+    // robot). Returns the resulting listening state.
+    if (method == "voice.listen") {
+        voice::toggle_listen();
+        return {{"ok", true}, {"result", {{"listening", voice::listening()}}}};
+    }
 
     // Robot control — the phone can animate/drive the desktop robot.
     if (method.rfind("robot.", 0) == 0) {

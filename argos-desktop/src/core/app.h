@@ -38,9 +38,11 @@ public:
 
     char* cerebras_key_buffer() { return api_key_input_; }
     char* assemblyai_key_buffer() { return aai_key_input_; }
+    char* bitdeer_key_buffer() { return bitdeer_key_input_; }
     static constexpr size_t key_buffer_size = 256;
     bool& reveal_cerebras_key() { return show_api_key_; }
     bool& reveal_assemblyai_key() { return show_aai_key_; }
+    bool& reveal_bitdeer_key() { return show_bitdeer_key_; }
     std::string& toast_message() { return toast_message_; }
     double toast_deadline() const { return toast_until_; }
 
@@ -59,8 +61,10 @@ private:
     // Transient UI state
     char api_key_input_[256]{};
     char aai_key_input_[256]{};
+    char bitdeer_key_input_[256]{};
     bool show_api_key_ = false;
     bool show_aai_key_ = false;
+    bool show_bitdeer_key_ = false;
     std::string toast_message_;
     double toast_until_ = 0.0;
 };

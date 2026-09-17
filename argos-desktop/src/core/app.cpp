@@ -10,6 +10,7 @@
 #include "link/link_client.h"
 #include "phone/phone_server.h"
 #include "platform/win_util.h"
+#include "voice/voice.h"
 
 namespace argos {
 
@@ -29,13 +30,12 @@ bool App::init(HINSTANCE hinst) {
     // Seed the settings fields from the loaded config.
     std::snprintf(api_key_input_, sizeof(api_key_input_), "%s", config().cerebras.api_key.c_str());
     std::snprintf(aai_key_input_, sizeof(aai_key_input_), "%s", config().assemblyai.api_key.c_str());
+    std::snprintf(bitdeer_key_input_, sizeof(bitdeer_key_input_), "%s", config().bitdeer.api_key.c_str());
 
     // ── Floating robot (Three.js scene in WebView2) ──
     if (config().overlay.enabled) {
         if (robot_.create(hinst)) {
-            robot_.set_tap_handler([this] {
-                toast("Robot tapped — the voice pipeline lands with the AssemblyAI service.");
-            });
+            robot_.set_tap_handler([this] { voice::toggle_listen(); });
         } else {
             log::error("The robot overlay could not start; the control panel still works.");
             toast("Robot overlay unavailable — see the Log tab.");
@@ -75,6 +75,7 @@ void App::save_settings() {
 void App::apply_settings_from_ui() {
     config().cerebras.api_key = api_key_input_;
     config().assemblyai.api_key = aai_key_input_;
+    config().bitdeer.api_key = bitdeer_key_input_;
 }
 
 int App::run() {
@@ -97,6 +98,7 @@ int App::run() {
         }
     }
 
+    voice::shutdown();
     link::link_client().stop();
     phone::phone_server().stop();
     robot_.destroy();

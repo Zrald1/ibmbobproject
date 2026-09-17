@@ -36,6 +36,24 @@ never orphaning a tool result from its requesting assistant message.
 `max_completion_tokens`, `temperature` and `reasoning_effort` come from the
 `cerebras` config section.
 
+### Sub-agents (Bitdeer)
+
+Cerebras is the orchestrator; specialist models on
+`api-inference.bitdeer.ai` act as sub-agents it can delegate to. Each row in
+Settings → "Bitdeer (sub-agents)" defines `{name, model, prompt}` and becomes
+a tool named `ask_<name>(task, context?)` — e.g. `coder` →
+`deepseek-ai/DeepSeek-V4.1-Flash`, `reviewer` → `zai-org/GLM-5.3-Flash`.
+Sub-agents return text only (no tool access); the brain applies their output
+through the real tools. Bitdeer key is DPAPI-stored; `GET /v1/models` lists
+the catalog.
+
+### Voice (AssemblyAI)
+
+Double-click the robot to toggle listening: `waveIn` captures 16 kHz mono PCM,
+then `src/voice/voice.cpp` uploads a WAV to AssemblyAI REST (`/v2/upload` →
+`/v2/transcript` poll) and feeds the transcript into `agent().ask_async`.
+Also triggerable remotely via `voice.listen` dispatch.
+
 `tools::execute()` picks the backend automatically: the **IDE bridge** when an
 editor is connected (edits land in open buffers and are undoable via
 `WorkspaceEdit`), otherwise the **native** implementation. A tool that is
@@ -107,6 +125,7 @@ Both phone transports accept `{method, params}` and return
 |--------|--------|---------|
 | `phone.ping` | – | `{pong: true, name}` |
 | `desktop.status` | – | hostname, robot state, IDE bridge status, tool count |
+| `voice.listen` | – | toggle mic listening (same as double-clicking the robot) |
 | `tools.list` | – | the 17 tool schemas above |
 | `robot.state` | `name` | scene state (idle, listening, thinking, …) |
 | `robot.expression` | `name` | facial expression (happy, …) |
@@ -152,7 +171,8 @@ Python backend (`backend/app/routes/link.py`) and the Java fallback
 
 | File | Role |
 |------|------|
-| `src/agent/agent.cpp` | Cerebras agent loop (chat completions + tool calls) |
+| `src/agent/agent.cpp` | Cerebras agent loop + Bitdeer sub-agent delegation |
+| `src/voice/voice.cpp` | waveIn capture → AssemblyAI REST → agent |
 | `src/tools/tools.cpp` | `tools::execute` dispatch, schemas, native implementations |
 | `src/bridge/ide_bridge.cpp` | WinHTTP client for the IDE bridge |
 | `src/commands/dispatch.cpp` | shared `{method,params}` → action dispatcher |

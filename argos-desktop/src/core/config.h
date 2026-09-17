@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace argos {
 
@@ -22,6 +23,22 @@ struct Config {
         double temperature = 0.7;
         int timeout_seconds = 60;
     } cerebras;
+
+    struct SubAgent {
+        std::string name;    // becomes the ask_<name> tool
+        std::string model;   // Bitdeer catalog id, e.g. "deepseek-ai/DeepSeek-V4.1-Flash"
+        std::string prompt;  // specialty system prompt ("you are a code reviewer…")
+    };
+
+    struct Bitdeer {
+        std::string api_key;  // plaintext in memory, DPAPI blob on disk
+        std::string base_url = "https://api-inference.bitdeer.ai/v1";
+        int max_tokens = 2048;
+        double temperature = 0.7;
+        int timeout_seconds = 90;
+        // User-defined sub-agents the Cerebras brain can delegate to.
+        std::vector<SubAgent> agents;
+    } bitdeer;
 
     struct AssemblyAI {
         std::string api_key;  // plaintext in memory, DPAPI blob on disk

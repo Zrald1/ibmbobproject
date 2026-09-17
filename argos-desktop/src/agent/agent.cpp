@@ -33,11 +33,63 @@ Rules:
 - execute_command runs in a terminal (IDE terminal when an editor is connected, else cmd.exe). Keep commands non-interactive.
 - When a tool call fails, adapt: check the error, try a different path or approach, don't blindly retry.
 - Be concise in final answers — you are a desktop companion, not a document.
-- If a task is impossible (missing app, no permission), say so plainly instead of pretending.)";
+- If a task is impossible (missing app, no permission), say so plainly instead of pretending.
+- You may delegate work to configured sub-agents (ask_* tools) — they are specialist AI models that return text only and cannot run tools themselves. Give them complete, self-contained tasks.)";
+
+// Tool-name-safe suffix: letters, digits, _ and - only.
+std::string sanitize_tool_name(const std::string& name) {
+    std::string out;
+    for (char c : name) {
+        if (isalnum((unsigned char)c) || c == '_' || c == '-')
+            out += (char)tolower((unsigned char)c);
+        else if (c == ' ' || c == '.')
+            out += '_';
+    }
+    if (out.empty()) out = "agent";
+    return out;
+}
+
+// One extra tool per configured Bitdeer sub-agent: ask_<name>(task, context?).
+nlohmann::json subagent_tools() {
+    nlohmann::json tools = nlohmann::json::array();
+    if (config().bitdeer.api_key.empty()) return tools;
+    for (const auto& sa : config().bitdeer.agents) {
+        if (sa.name.empty() || sa.model.empty()) continue;
+        nlohmann::json params = {
+            {"type", "object"},
+            {"properties",
+             {{"task",
+               {{"type", "string"},
+                {"description", "The complete task or question for the sub-agent"}}},
+              {"context",
+               {{"type", "string"},
+                {"description", "Optional extra context, e.g. file contents or constraints"}}}}},
+            {"required", nlohmann::json::array({"task"})}};
+        nlohmann::json tool = {
+            {"type", "function"},
+            {"function",
+             {{"name", "ask_" + sanitize_tool_name(sa.name)},
+              {"description",
+               std::format("Delegate to the '{}' sub-agent ({}). {} Give it "
+                           "a complete, self-contained task; it returns text "
+                           "only and cannot run tools.",
+                           sa.name, sa.model,
+                           sa.prompt.empty() ? "General assistant." : sa.prompt)},
+              {"parameters", params}}}};
+        tools.push_back(std::move(tool));
+    }
+    return tools;
+}
 
 std::string truncate(const std::string& s, size_t cap) {
     if (s.size() <= cap) return s;
     return s.substr(0, cap) + std::format("\n… [{} bytes truncated]", s.size() - cap);
+}
+
+// value() throws on present-but-null; models do send nulls sometimes.
+std::string str_arg(const nlohmann::json& args, const char* key) {
+    auto it = args.find(key);
+    return (it != args.end() && it->is_string()) ? it->get<std::string>() : "";
 }
 
 // POST a JSON body over HTTPS (or HTTP) and return the decoded body.
@@ -190,13 +242,63 @@ std::pair<bool, std::string> Agent::ask_sync(const std::string& text) {
     return result;
 }
 
+// Run one Bitdeer sub-agent: a single non-tool chat completion with the
+// sub-agent's own model + specialty prompt.
+std::pair<bool, std::string> call_subagent(const Config::SubAgent& sa,
+                                           const std::string& task,
+                                           const std::string& context) {
+    const auto& cfg = config().bitdeer;
+    if (cfg.api_key.empty()) return {false, "no Bitdeer API key configured"};
+
+    std::string user = task;
+    if (!context.empty()) user += "\n\nContext:\n" + context;
+
+    nlohmann::json body = {
+        {"model", sa.model},
+        {"messages",
+         nlohmann::json::array(
+             {{{"role", "system"},
+               {"content", sa.prompt.empty()
+                               ? "You are a helpful assistant."
+                               : sa.prompt}},
+              {{"role", "user"}, {"content", user}}})},
+        {"max_tokens", cfg.max_tokens},
+        {"temperature", cfg.temperature},
+        {"stream", false},
+    };
+    std::string err;
+    auto raw = post_json(cfg.base_url, "/chat/completions", cfg.api_key, body,
+                         cfg.timeout_seconds, &err);
+    if (!raw) return {false, "Bitdeer: " + err};
+    auto resp = nlohmann::json::parse(*raw, nullptr, false);
+    if (resp.is_discarded()) return {false, "Bitdeer: invalid JSON"};
+    const auto& choices = resp["choices"];
+    if (!choices.is_array() || choices.empty())
+        return {false, "Bitdeer: empty response"};
+    const auto& msg = choices[0]["message"];
+    if (msg.contains("content") && msg["content"].is_string())
+        return {true, msg["content"].get<std::string>()};
+    return {false, "Bitdeer: no content"};
+}
+
+// Find the configured sub-agent behind an ask_<name> tool call.
+const Config::SubAgent* find_subagent(const std::string& tool_name) {
+    if (tool_name.rfind("ask_", 0) != 0) return nullptr;
+    const std::string want = tool_name.substr(4);
+    for (const auto& sa : config().bitdeer.agents)
+        if (sanitize_tool_name(sa.name) == want) return &sa;
+    return nullptr;
+}
+
 std::optional<nlohmann::json> Agent::chat_complete(const nlohmann::json& messages,
                                                    std::string* err) {
     const auto& cfg = config().cerebras;
+    nlohmann::json all_tools = tools::schemas();
+    for (const auto& t : subagent_tools()) all_tools.push_back(t);
     nlohmann::json body = {
         {"model", cfg.model},
         {"messages", messages},
-        {"tools", tools::schemas()},
+        {"tools", all_tools},
         {"tool_choice", "auto"},
         {"parallel_tool_calls", false},  // unsupported by gpt-oss-120b
         {"temperature", cfg.temperature},
@@ -286,17 +388,28 @@ std::pair<bool, std::string> Agent::run_turn(const std::string& text) {
             push_visible("tool", "tool: " + name);
             log::info(std::format("agent tool call: {} {}", name, args_raw));
 
-            tools::Result r = tools::execute(name, args);
-            std::string content =
-                r.ok ? (r.output.empty() ? "ok" : r.output)
-                     : "error: " + r.output;
-            if (!r.ok) {
+            std::string content;
+            bool ok = false;
+            if (const Config::SubAgent* sa = find_subagent(name)) {
+                // ask_<name> — delegate to a Bitdeer sub-agent.
+                auto [sok, reply] =
+                    call_subagent(*sa, str_arg(args, "task"),
+                                  str_arg(args, "context"));
+                ok = sok;
+                content = sok ? reply : "error: " + reply;
+            } else {
+                tools::Result r = tools::execute(name, args);
+                ok = r.ok;
+                content = r.ok ? (r.output.empty() ? "ok" : r.output)
+                               : "error: " + r.output;
+            }
+            if (!ok) {
                 // gpt-oss can hallucinate tool names — tell it plainly so it
                 // self-corrects instead of retrying the same call.
                 content += " (if this tool does not exist, do not call it again)";
             }
-            push_visible("tool", std::format("   {} {}", r.ok ? "ok:" : "err:",
-                                             truncate(r.output, 200)));
+            push_visible("tool", std::format("   {} {}", ok ? "ok:" : "err:",
+                                             truncate(content, 200)));
 
             std::lock_guard lock(mu_);
             messages_.push_back({{"role", "tool"},

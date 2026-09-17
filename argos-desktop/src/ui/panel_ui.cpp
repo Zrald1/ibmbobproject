@@ -146,6 +146,53 @@ void draw_settings_tab(App& application) {
         if (ImGui::InputInt("Timeout (s)", &cfg.cerebras.timeout_seconds)) dirty = true;
 
         ImGui::Spacing();
+        ImGui::SeparatorText("Bitdeer (sub-agents)");
+        ImGui::TextUnformatted("API key");
+        help_marker("Optional. With a key + at least one sub-agent below, the Cerebras "
+                    "brain can delegate work to specialist models (ask_<name> tools).");
+        if (secret_input("bitdeer_key", application.bitdeer_key_buffer(),
+                         App::key_buffer_size, application.reveal_bitdeer_key())) {
+            dirty = true;
+        }
+        ImGui::SetItemTooltip("Get a key at bitdeer.ai — api-inference.bitdeer.ai/v1");
+        ImGui::SetNextItemWidth(320);
+        if (ImGui::InputText("Base URL##bitdeer", &cfg.bitdeer.base_url)) dirty = true;
+
+        ImGui::TextUnformatted("Sub-agents (Cerebras delegates via ask_<name>)");
+        int remove_at = -1;
+        for (size_t i = 0; i < cfg.bitdeer.agents.size(); ++i) {
+            auto& sa = cfg.bitdeer.agents[i];
+            ImGui::PushID((int)i);
+            ImGui::SetNextItemWidth(130);
+            if (ImGui::InputTextWithHint("##name", "name", &sa.name)) dirty = true;
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(250);
+            if (ImGui::InputTextWithHint("##model", "model e.g. deepseek-ai/DeepSeek-V4.1-Flash",
+                                         &sa.model))
+                dirty = true;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) remove_at = (int)i;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputTextWithHint("##prompt", "role — e.g. You are a senior C++ code reviewer…",
+                                         &sa.prompt))
+                dirty = true;
+            ImGui::PopID();
+        }
+        if (remove_at >= 0) {
+            cfg.bitdeer.agents.erase(cfg.bitdeer.agents.begin() + remove_at);
+            dirty = true;
+        }
+        if (ImGui::SmallButton("+ Add sub-agent")) {
+            cfg.bitdeer.agents.push_back({"coder", "deepseek-ai/DeepSeek-V4.1-Flash",
+                                          "You are an expert programmer. Return only the "
+                                          "requested code or analysis."});
+            dirty = true;
+        }
+        ImGui::SameLine();
+        help_marker("Each row becomes an ask_<name> tool. Examples: coder=deepseek-ai/DeepSeek-V4.1-Flash, "
+                    "reviewer=zai-org/GLM-5.3-Flash, planner=zai-org/GLM-5.2.");
+
+        ImGui::Spacing();
         ImGui::SeparatorText("AssemblyAI (live transcription)");
         ImGui::TextUnformatted("API key");
         help_marker("Streaming keys are sent only over TLS to streaming.assemblyai.com.");

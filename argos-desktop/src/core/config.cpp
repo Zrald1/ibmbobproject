@@ -24,6 +24,23 @@ nlohmann::json to_json(const Config& c) {
              {"temperature", c.cerebras.temperature},
              {"timeout_seconds", c.cerebras.timeout_seconds},
          }},
+        {"bitdeer",
+         {
+             {"api_key", win::dpapi_protect(c.bitdeer.api_key)},
+             {"base_url", c.bitdeer.base_url},
+             {"max_tokens", c.bitdeer.max_tokens},
+             {"temperature", c.bitdeer.temperature},
+             {"timeout_seconds", c.bitdeer.timeout_seconds},
+             {"agents",
+              [&] {
+                  json arr = json::array();
+                  for (const auto& sa : c.bitdeer.agents)
+                      arr.push_back({{"name", sa.name},
+                                     {"model", sa.model},
+                                     {"prompt", sa.prompt}});
+                  return arr;
+              }()},
+         }},
         {"assemblyai",
          {
              {"api_key", win::dpapi_protect(c.assemblyai.api_key)},
@@ -127,6 +144,20 @@ void from_json(const nlohmann::json& j, Config& c) {
         pick(n, "max_tokens", c.cerebras.max_tokens);
         pick(n, "temperature", c.cerebras.temperature);
         pick(n, "timeout_seconds", c.cerebras.timeout_seconds);
+    }
+    if (auto it = j.find("bitdeer"); it != j.end()) {
+        const auto& n = *it;
+        c.bitdeer.api_key = pick_secret(n, "api_key");
+        pick(n, "base_url", c.bitdeer.base_url);
+        pick(n, "max_tokens", c.bitdeer.max_tokens);
+        pick(n, "temperature", c.bitdeer.temperature);
+        pick(n, "timeout_seconds", c.bitdeer.timeout_seconds);
+        c.bitdeer.agents.clear();
+        if (auto a = n.find("agents"); a != n.end() && a->is_array())
+            for (const auto& sa : *a)
+                c.bitdeer.agents.push_back(
+                    {sa.value("name", ""), sa.value("model", ""),
+                     sa.value("prompt", "")});
     }
     if (auto it = j.find("assemblyai"); it != j.end()) {
         const auto& n = *it;
