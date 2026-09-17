@@ -62,6 +62,9 @@ argos_config.txt
 aria_*.txt
 imgui.ini
 *.tmp
+# Windows device-name phantom — appears in every dir listing, can never exist
+nul
+**/nul
 
 # Generated signing secret blob (never commit)
 argos-keystore.base64.txt
