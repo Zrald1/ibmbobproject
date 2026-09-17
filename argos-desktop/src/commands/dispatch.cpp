@@ -61,16 +61,22 @@ json dispatch(const std::string& method, const json& params) {
         return {{"ok", true}, {"result", {{"robot", what}, {"value", value}}}};
     }
 
-    // "task.prompt" — a free-text request. Until the Cerebras agent loop is
-    // wired, the most useful behaviour is forwarding it into the IDE's AI
-    // chatbox (the proven chat.send path) when an IDE bridge is live.
+    // "task.prompt" — a free-text request. With a Cerebras key configured the
+    // local agent loop handles it (it can run tools itself); otherwise it
+    // falls back to forwarding into the IDE's AI chatbox when a bridge is live.
     if (method == "task.prompt") {
         std::string text = params.value("text", "");
         if (text.empty()) return {{"ok", false}, {"error", "text required"}};
+        if (a.agent().ready()) {
+            auto [ok, reply] = a.agent().ask_sync(text);
+            return ok ? json{{"ok", true}, {"result", {{"reply", reply}}}}
+                      : json{{"ok", false}, {"error", reply}};
+        }
         a.ide().refresh();
         if (!a.ide().connected())
             return {{"ok", false},
-                    {"error", "no IDE connected — chatbox delivery unavailable"}};
+                    {"error", "no Cerebras key and no IDE connected — "
+                              "chatbox delivery unavailable"}};
         a.robot().set_state("thinking");
         auto r = a.ide().call("chat.send", {{"text", text}});
         if (!r)

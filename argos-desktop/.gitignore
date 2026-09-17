@@ -20,3 +20,6 @@
 /tmp/
 /secrets/
 argos_config.txt
+
+# Windows device-name phantom
+nul

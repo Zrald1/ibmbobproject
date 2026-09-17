@@ -508,7 +508,10 @@ Result file_stat_native(const fs::path& path) {
                         {"path", narrow(path)},
                         {"kind", fs::is_directory(st) ? "dir" : "file"}};
     if (!fs::is_directory(st)) data["size"] = fs::file_size(path, ec);
-    return ok_result(narrow(path) + " (" + data["kind"].get<std::string>() + ")", std::move(data));
+    // Read `kind` before std::move(data) — argument evaluation order is
+    // unspecified, so the move could run first and leave `data` null.
+    const std::string kind = data["kind"].get<std::string>();
+    return ok_result(narrow(path) + " (" + kind + ")", std::move(data));
 }
 
 Result rename_native(const fs::path& from, const fs::path& to, bool overwrite) {

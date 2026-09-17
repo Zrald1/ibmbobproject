@@ -7,7 +7,8 @@ The design follows the tool models of **OpenCode** (`edit`/`write`/`bash`/`grep`
 `search_files`/`execute_command` with shell-integration output capture).
 
 ```
-┌─ Cerebras agent loop (tools::schemas() → function calling)
+┌─ Cerebras agent loop (src/agent/ — POST /v1/chat/completions + tools)
+│     ↑ fed by: Chat tab UI · task.prompt (phone/relay) · proactive turns
 ├─ IDE bridge (extension-ide, loopback HTTP, bearer token)
 ├─ Phone, direct LAN     (phone_server, :47830, bearer token)
 └─ Phone, backend relay  (link_client → /api/link/* poll)
@@ -21,6 +22,19 @@ The design follows the tool models of **OpenCode** (`edit`/`write`/`bash`/`grep`
  (WorkspaceEdit, in-sync with     (plain Win32/std::filesystem — works with
   open editors, undoable)          no IDE at all)
 ```
+
+## Agent loop (`src/agent/agent.cpp`)
+
+`agent::Agent` drives Cerebras `POST /v1/chat/completions` with all 17 tool
+schemas attached (`tool_choice: "auto"`, `parallel_tool_calls: false` —
+unsupported by `gpt-oss-120b`). Each `tool_calls` round runs
+`tools::execute` and feeds results back as `role:"tool"` messages, up to 12
+rounds per turn. Entry points: `ask_async` (Chat tab) and `ask_sync`
+(`task.prompt` — falls back to the IDE chatbox when no API key is set).
+Context keeps the system prompt plus `assistant.history_turns` exchanges,
+never orphaning a tool result from its requesting assistant message.
+`max_completion_tokens`, `temperature` and `reasoning_effort` come from the
+`cerebras` config section.
 
 `tools::execute()` picks the backend automatically: the **IDE bridge** when an
 editor is connected (edits land in open buffers and are undoable via
@@ -100,7 +114,7 @@ Both phone transports accept `{method, params}` and return
 | `robot.thinking` / `talking` / `listening` | `on` | state flags |
 | `robot.move` | `x`, `y` | teleport the overlay |
 | `robot.visible` | `on` | show/hide |
-| `task.prompt` | `text` | forwarded into the IDE's AI chatbox via `chat.send` |
+| `task.prompt` | `text` | Cerebras agent loop (runs tools itself); falls back to the IDE chatbox when no key is set |
 | *any tool name* | tool args | e.g. `read_file`, `execute_command` |
 | *any bridge name* | bridge params | e.g. `file.read` — reverse-mapped to the tool |
 
@@ -138,6 +152,7 @@ Python backend (`backend/app/routes/link.py`) and the Java fallback
 
 | File | Role |
 |------|------|
+| `src/agent/agent.cpp` | Cerebras agent loop (chat completions + tool calls) |
 | `src/tools/tools.cpp` | `tools::execute` dispatch, schemas, native implementations |
 | `src/bridge/ide_bridge.cpp` | WinHTTP client for the IDE bridge |
 | `src/commands/dispatch.cpp` | shared `{method,params}` → action dispatcher |

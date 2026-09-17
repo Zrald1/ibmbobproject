@@ -319,11 +319,54 @@ void draw_qr_code(const std::string& payload, float target_px) {
 }  // namespace
 
 void draw_chat_tab(App& application) {
-    ImGui::TextDisabled("Chat history appears here once the Cerebras service is online.");
-    ImGui::Separator();
-    ImGui::BeginChild("chat_scroll", ImVec2(0, -40));
-    ImGui::TextWrapped("No conversation yet.");
+    auto& agent = application.agent();
+    if (!agent.ready()) {
+        ImGui::TextDisabled("No Cerebras API key — add one in Settings to chat.");
+        return;
+    }
+
+    ImGui::BeginChild("chat_scroll", ImVec2(0, -36),
+                      ImGuiChildFlags_Border);
+    for (const auto& e : agent.history()) {
+        if (e.role == "user") {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
+            ImGui::TextWrapped("You: %s", e.text.c_str());
+        } else if (e.role == "assistant") {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 1.0f, 0.75f, 1.0f));
+            ImGui::TextWrapped("Argos: %s", e.text.c_str());
+        } else if (e.role == "tool") {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.65f, 0.65f, 1.0f));
+            ImGui::TextWrapped("%s", e.text.c_str());
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.55f, 1.0f));
+            ImGui::TextWrapped("%s", e.text.c_str());
+        }
+        ImGui::PopStyleColor();
+    }
+    if (agent.busy()) ImGui::TextDisabled("Argos is thinking…");
+    // Keep pinned to the newest entry while the agent streams activity.
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 40)
+        ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
+
+    static std::string input;
+    ImGui::SetNextItemWidth(-90);
+    bool send = ImGui::InputTextWithHint("##chat_input",
+                                         agent.busy() ? "working…"
+                                                      : "Ask Argos…",
+                                         &input,
+                                         ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    send |= ImGui::Button("Send", ImVec2(0, 0)) && !input.empty();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        agent.clear();
+        input.clear();
+    }
+    if (send && !input.empty() && !agent.busy()) {
+        if (agent.ask_async(input))
+            input.clear();
+    }
 }
 
 void draw_transcript_tab(App& application) {

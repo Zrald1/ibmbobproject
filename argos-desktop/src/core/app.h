@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 
+#include "agent/agent.h"
 #include "bridge/ide_bridge.h"
 #include "gfx/device.h"
 #include "ui/panel_window.h"
@@ -25,6 +26,7 @@ public:
     ui::PanelWindow& panel() { return panel_; }
     ui::RobotOverlay& robot() { return robot_; }
     bridge::IdeBridge& ide() { return ide_; }
+    agent::Agent& agent() { return agent_; }
     HINSTANCE hinst() const { return instance_; }
 
     // ── UI state shared with ui/panel_ui.cpp ──
@@ -50,6 +52,7 @@ private:
     ui::PanelWindow panel_;
     ui::RobotOverlay robot_;
     bridge::IdeBridge ide_;
+    agent::Agent agent_;
     bool running_ = true;
     bool settings_dirty_ = false;
 
