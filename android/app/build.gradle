@@ -137,6 +137,10 @@ dependencies {
     implementation 'com.google.mediapipe:tasks-vision:0.10.29'
     // Concurrent futures for CameraX (provides ListenableFuture)
     implementation 'androidx.concurrent:concurrent-futures:1.2.0'
+    // Google Code Scanner — QR pairing with the Argos desktop. Play-Services
+    // powered (unbundled), so no barcode .so files land in the APK and it
+    // needs no camera permission wiring of its own.
+    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
 
     // ── Test dependencies ──
     testImplementation 'junit:junit:4.13.2'

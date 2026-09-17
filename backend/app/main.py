@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import chat, voice, thought
+from app.routes import chat, voice, thought, link
 
 app = FastAPI(title="Argos Backend")
 
@@ -19,3 +19,4 @@ app.add_middleware(
 app.include_router(chat.router, prefix="/api")
 app.include_router(voice.router, prefix="/api")
 app.include_router(thought.router, prefix="/api")
+app.include_router(link.router, prefix="/api")

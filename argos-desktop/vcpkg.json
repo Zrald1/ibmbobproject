@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "argos-desktop",
+  "version": "0.1.0",
+  "description": "Argos Desktop — local AI companion for Windows (Cerebras + AssemblyAI, pure C++)",
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": [
+        "dx11-binding",
+        "win32-binding"
+      ]
+    },
+    "nlohmann-json",
+    "webview2",
+    "wil"
+  ]
+}

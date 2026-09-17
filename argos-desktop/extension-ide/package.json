@@ -1,0 +1,71 @@
+{
+  "name": "argos-ide-bridge",
+  "displayName": "Argos IDE Bridge",
+  "description": "Local bridge that lets the Argos desktop companion drive the editor and its AI chat assistants.",
+  "version": "0.1.0",
+  "publisher": "argos",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "argos.showStatus",
+        "title": "Argos: Show Bridge Status"
+      },
+      {
+        "command": "argos.restartBridge",
+        "title": "Argos: Restart Bridge"
+      }
+    ],
+    "configuration": {
+      "title": "Argos Bridge",
+      "properties": {
+        "argos.port": {
+          "type": "number",
+          "default": 47820,
+          "description": "Loopback port the bridge listens on. If busy, the next ports are tried."
+        },
+        "argos.autostart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the bridge automatically when the editor opens."
+        },
+        "argos.chatProvider": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "copilot",
+            "continue",
+            "cline",
+            "roo",
+            "cody",
+            "generic"
+          ],
+          "description": "Which AI chat assistant 'chat.send' targets. 'auto' picks the first installed."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.5"
+  }
+}
