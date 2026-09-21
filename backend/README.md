@@ -19,15 +19,38 @@ expressions and gestures.
 │                 │                           │   ├─ OpenAI-compatible   │
 └─────────────────┘                           │   └─ AssemblyAI          │
                                               └──────────────────────────┘
+
+┌─────────────────┐   POST /api/link/pair     ┌──────────────────────────┐
+│  Android App    │   POST /api/link/command  │  Argos Backend (this)    │
+│  (DesktopLink)  │   POST /api/link/status   │                          │
+│                 │  ──────────────────────►  │  /api/link/*             │
+└─────────────────┘                           │  Pure relay — queues     │
+                                               │  commands, never         │
+┌─────────────────┐   POST /api/link/register │  executes anything       │
+│  Argos Desktop  │   GET  /api/link/poll     │  itself.                 │
+│  (C++, native)  │   POST /api/link/result   │                          │
+└─────────────────┘  ──────────────────────►  └──────────────────────────┘
 ```
 
 The Three.js robot (`android/app/src/main/assets/argos_robot.html`) runs inside a
-WebView and does **not** call the backend directly. The flow is:
+WebView and does **not** call the backend directly. The chat/voice/thought flow is:
 
 1. `FloatingRobotService.java` sends the user's message (or recorded audio) to the backend
 2. The backend calls the LLM and returns the reply, which may contain tool tags
 3. Java parses the tags and calls `robotWebView.evaluateJavascript("ArgosJS.setExpression('HAPPY')", null)`
 4. The Three.js robot updates its face, hands and animation accordingly
+
+The **desktop relay** (`/api/link/*`) is a separate, unrelated flow: the Argos
+Desktop app (native C++, its own Cerebras-based agent loop and 17 file/search/
+terminal tools — see [`argos-desktop/TOOLS.md`](../argos-desktop/TOOLS.md))
+registers and polls this backend; the Android app pairs with it by scanning a
+QR code and queues commands (`read_file`, `execute_command`, etc.) for it to
+run. This backend never inspects or executes those commands — it only queues
+and delivers `{method, params}` and relays back `{ok, result|error}`. All tool
+*execution* lives in the desktop's C++ code and the IDE bridge extension; the
+backend's only job here is a secure, ordered mailbox between phone and
+desktop. State is in-memory (single-process) — a restart drops registrations,
+and desktops simply re-register on their next poll.
 
 ## Setup
 
@@ -72,6 +95,35 @@ Selected with `STT_PROVIDER`:
 
 `STT_API_BASE` and `STT_MODEL` are optional — sensible defaults are chosen per
 provider.
+
+## Desktop Relay API — `/api/link/*`
+
+Pure relay, no AI involved. Full protocol/security details are documented at
+the top of [`app/routes/link.py`](app/routes/link.py) and in
+[`argos-desktop/TOOLS.md`](../argos-desktop/TOOLS.md#transport-1--backend-relay-default).
+Summary:
+
+| Endpoint | Called by | Purpose |
+|---|---|---|
+| `POST /api/link/register` | Desktop | Announce itself, get `desktop_id`/`desktop_token`, and a fresh `pair_code` (shown as a QR) |
+| `POST /api/link/pair` | Phone | Trade a scanned `pair_code` for a `phone_token` scoped to that desktop |
+| `POST /api/link/command` | Phone | Queue `{method, params}` for the desktop (any tool from `TOOLS.md`, or `robot.*`/`task.prompt`) |
+| `GET /api/link/poll` | Desktop | Pick up queued commands (long-poll style, called every ~2s) |
+| `POST /api/link/result` | Desktop | Post `{ok, result|error}` for a delivered command |
+| `POST /api/link/status` | Phone | Check a command's state (`queued`/`delivered`/`done`/`error`) and read its result |
+| `POST /api/link/revoke` | Desktop | Unpair every phone and rotate the pair code |
+| `GET /api/link/health` | Anyone | Desktop count and how many are currently online |
+
+Run [`test_link_simulation.py`](test_link_simulation.py) to exercise the full
+register → pair → command → poll → result → status flow (plus the auth/
+security rejections) against a running backend, without needing the real
+Windows desktop build:
+
+```bash
+uvicorn app.main:app --reload &
+python test_link_simulation.py                                   # localhost
+python test_link_simulation.py --backend http://<host>:8000      # deployed
+```
 
 ## API Reference
 
@@ -162,7 +214,9 @@ backend/
 │   └── routes/
 │       ├── chat.py
 │       ├── voice.py
-│       └── thought.py
+│       ├── thought.py
+│       └── link.py           # Desktop<->phone relay (pure queue, no AI)
+├── test_link_simulation.py   # Simulates the relay end-to-end, no desktop build needed
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -178,6 +232,7 @@ the APK. They are not part of the deployed backend:
 | `app_simulation.html` / `app_simulation.js` | Faithful port of the app's voice pipeline (real mic → WAV → `/api/voice` → TTS) |
 | `robot_preview.html` | Renders `argos_robot.html` on a dark backdrop |
 | `SIMULATION_README.md` | How the simulation maps to `FloatingRobotService.java` |
+| `test_link_simulation.py` | Simulates a desktop + phone exercising `/api/link/*` end-to-end |
 
 ## Security Notes
 
