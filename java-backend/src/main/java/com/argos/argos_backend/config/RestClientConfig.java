@@ -11,4 +11,9 @@ public class RestClientConfig {
     public RestClient.Builder restClientBuilder() {
         return RestClient.builder();
     }
+
+    @Bean
+    public com.fasterxml.jackson.databind.ObjectMapper objectMapper() {
+        return new com.fasterxml.jackson.databind.ObjectMapper();
+    }
 }

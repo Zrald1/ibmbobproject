@@ -3,26 +3,26 @@ spring:
     name: argos-backend
 
   datasource:
-    url: jdbc:mysql://localhost:3306/argos_db?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
-    username: root
-    password: Famya$3110
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DATABASE_URL:jdbc:h2:mem:argos_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=MySQL}
+    username: ${DATABASE_USER:sa}
+    password: ${DATABASE_PASSWORD:}
+    driver-class-name: ${DATABASE_DRIVER:org.h2.Driver}
 
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
 
   servlet:
     multipart:
-      max-file-size: 20MB
-      max-request-size: 25MB
+      max-file-size: 25MB
+      max-request-size: 30MB
 
 server:
-  port: 8080
+  port: ${PORT:8080}
   error:
     include-message: always
 
@@ -31,13 +31,32 @@ management:
     web:
       exposure:
         include: health,info,metrics
-
   endpoint:
     health:
       show-details: always
 
 info:
   app:
-    name: ARGOS Backend
-    description: AI Companion resilient fallback backend
-    version: 0.0.1-SNAPSHOT
+    name: ARGOS Backend Fallback
+    description: AI Companion resilient fallback backend with multi-model support
+    version: 1.0.0
+
+argos:
+  ai:
+    default-model: ${ARGOS_DEFAULT_MODEL:gemini-3.8-flash}
+    models:
+      gpt-6-astra:
+        api-base: ${GPT6_ASTRA_API_BASE:https://api.openai.com/v1}
+        api-key: ${GPT6_ASTRA_API_KEY:}
+        model-name: ${GPT6_ASTRA_MODEL:gpt-6-astra}
+        timeout-ms: 30000
+      gemini-3.8-flash:
+        api-base: ${GEMINI_API_BASE:https://generativelanguage.googleapis.com/v1beta}
+        api-key: ${GEMINI_API_KEY:}
+        model-name: ${GEMINI_MODEL:gemini-3.8-flash}
+        timeout-ms: 25000
+      fable-5.1:
+        api-base: ${FABLE_API_BASE:https://api.fable.ai/v1}
+        api-key: ${FABLE_API_KEY:}
+        model-name: ${FABLE_MODEL:fable-5.1}
+        timeout-ms: 25000
