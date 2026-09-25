@@ -10,8 +10,9 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.server.ResponseStatusException;
 
-import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -79,6 +80,32 @@ public class GlobalExceptionHandler {
         );
     }
 
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiErrorResponse> handleResponseStatus(
+            ResponseStatusException exception,
+            HttpServletRequest request
+    ) {
+        HttpStatus status = HttpStatus.resolve(exception.getStatusCode().value());
+        if (status == null) {
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        String reason = exception.getReason() != null ? exception.getReason() : status.getReasonPhrase();
+        return buildErrorResponse(status, reason, request, Map.of());
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleUploadTooLarge(
+            MaxUploadSizeExceededException exception,
+            HttpServletRequest request
+    ) {
+        return buildErrorResponse(
+                HttpStatus.PAYLOAD_TOO_LARGE,
+                "Uploaded audio exceeds the maximum allowed size",
+                request,
+                Map.of()
+        );
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpectedError(
             Exception exception,
@@ -98,12 +125,10 @@ public class GlobalExceptionHandler {
             HttpServletRequest request,
             Map<String, String> validationErrors
     ) {
-        ApiErrorResponse response = new ApiErrorResponse(
-                false,
+        ApiErrorResponse response = ApiErrorResponse.of(
                 message,
                 status.value(),
                 request.getRequestURI(),
-                Instant.now(),
                 validationErrors
         );
 
