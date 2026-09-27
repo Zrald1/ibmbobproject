@@ -138,17 +138,29 @@ jobs:
         working-directory: argos-desktop
         run: cmake --build build --config Release --parallel
 
+      - name: Set up Node.js (for IDE bridge packaging)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build & package IDE bridge extension
+        shell: pwsh
+        working-directory: argos-desktop/extension-ide
+        run: |
+          npm ci
+          npx @vscode/vsce package --allow-missing-repository --out argos-ide-bridge.vsix
+
       - name: Stage artefacts
         shell: pwsh
         working-directory: argos-desktop
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build\Release\argos.exe        dist\
+          Copy-Item build\Release\argos.exe          dist\
           Copy-Item build\Release\WebView2Loader.dll dist\
-          Copy-Item build\Release\assets           dist\assets -Recurse
-          # Include the IDE bridge .vsix and MCP bridge script
-          Copy-Item extension-ide\argos-ide-bridge-0.1.0.vsix dist\
-          Copy-Item mcp-server\argos_bridge.py     dist\
+          Copy-Item build\Release\assets             dist\assets -Recurse
+          # IDE bridge .vsix (built above) and MCP bridge script
+          Copy-Item extension-ide\argos-ide-bridge.vsix dist\
+          Copy-Item mcp-server\argos_bridge.py          dist\
 
       - name: Zip desktop build
         shell: pwsh
@@ -210,7 +222,7 @@ jobs:
             ### Argos Desktop — quick start
             1. Download and extract `argos-desktop-windows-x64.zip`
             2. Run `argos.exe` — the robot overlay appears immediately
-            3. Install the IDE bridge: `code --install-extension argos-ide-bridge-0.1.0.vsix`
+            3. Install the IDE bridge: `code --install-extension argos-ide-bridge.vsix`
             4. (Optional) Add the MCP bridge to your CLI agent — see `argos_bridge.py` header
 
             Release notes are generated automatically below.
