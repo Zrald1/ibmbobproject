@@ -2,15 +2,20 @@ spring:
   application:
     name: argos-backend
 
+  # Dual-mode persistence: defaults to an embedded H2 database so the backend
+  # boots standalone with zero external dependencies. Point DB_URL/DB_DRIVER/
+  # DB_USER/DB_PASSWORD at a MySQL instance (or run with --spring.profiles.active=mysql)
+  # to use MySQL instead - no code changes required.
   datasource:
-    url: jdbc:h2:mem:argos_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
+    url: ${DB_URL:jdbc:h2:mem:argos_db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
+    driver-class-name: ${DB_DRIVER:org.h2.Driver}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
 
   jpa:
     hibernate:
       ddl-auto: update
+    open-in-view: false
     show-sql: false
     properties:
       hibernate:
@@ -35,13 +40,53 @@ management:
     web:
       exposure:
         include: health,info,metrics
-
   endpoint:
     health:
       show-details: always
+
+# Argos multi-model AI engine. Every key defaults to blank so the backend runs
+# in offline simulation mode out-of-the-box; supplying a key switches that
+# provider to live upstream calls with automatic cascade fallback.
+argos:
+  ai:
+    default-model: ${ARGOS_DEFAULT_MODEL:gpt-6-astra}
+    request-timeout-ms: ${ARGOS_AI_TIMEOUT_MS:8000}
+    providers:
+      "[gpt-6-astra]":
+        api-key: ${GPT6_ASTRA_API_KEY:}
+        api-base: ${GPT6_ASTRA_API_BASE:https://api.openai.com/v1}
+        model: ${GPT6_ASTRA_MODEL:gpt-6-astra}
+      "[gemini-3.8-flash]":
+        api-key: ${GEMINI_FLASH_API_KEY:}
+        api-base: ${GEMINI_FLASH_API_BASE:https://api.openai.com/v1}
+        model: ${GEMINI_FLASH_MODEL:gemini-3.8-flash}
+      "[fable-5.1]":
+        api-key: ${FABLE_API_KEY:}
+        api-base: ${FABLE_API_BASE:https://api.openai.com/v1}
+        model: ${FABLE_MODEL:fable-5.1}
+    stt:
+      api-key: ${STT_API_KEY:}
+      api-base: ${STT_API_BASE:https://api.openai.com/v1}
+      model: ${STT_MODEL:whisper-1}
 
 info:
   app:
     name: ARGOS Backend
     description: AI Companion resilient fallback backend
     version: 0.0.1-SNAPSHOT
+
+---
+# Optional MySQL profile: activate with --spring.profiles.active=mysql
+spring:
+  config:
+    activate:
+      on-profile: mysql
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/argos_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:}
+  jpa:
+    database-platform: org.hibernate.dialect.MySQLDialect
+    hibernate:
+      ddl-auto: update
