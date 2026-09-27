@@ -44,6 +44,7 @@ std::optional<std::wstring> get_clipboard_text();
 // the foreground. Required before synthetic input: SendInput only reaches the
 // focused app, and the extension can only focus UI *inside* its own window.
 bool bring_process_to_front(DWORD pid);
+bool bring_window_to_front(HWND hwnd);
 // Sends Ctrl+V then Enter through SendInput — drops a staged clipboard prompt
 // into an IDE chat input that offers no programmatic submit API.
 bool send_paste_enter();

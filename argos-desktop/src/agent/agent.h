@@ -50,6 +50,19 @@ public:
 
     void clear();
 
+    // Surface an out-of-band event into the visible chat (context-menu actions,
+    // background jobs) without running a model turn.
+    void post_visible(std::string role, std::string text) {
+        push_visible(std::move(role), std::move(text));
+    }
+
+    // Follow-up prompt suggestions for the chat UI (up to 4 short prompts,
+    // refreshed after each turn).
+    std::vector<std::string> suggestions() const {
+        std::lock_guard lock(mu_);
+        return suggestions_;
+    }
+
 private:
     // Shared core: appends the user message, runs the tool-call loop, and
     // records visible entries. Must NOT be called with mu_ held.
@@ -61,10 +74,13 @@ private:
 
     void push_visible(std::string role, std::string text);
     void trim_context();
+    void update_suggestions(const std::string& user_text,
+                            const std::string& reply);
 
     mutable std::mutex mu_;
     nlohmann::json messages_ = nlohmann::json::array();  // full API context
     std::vector<ChatEntry> visible_;
+    std::vector<std::string> suggestions_;
     std::atomic<bool> busy_{false};
 };
 

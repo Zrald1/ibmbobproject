@@ -1,4 +1,4 @@
-# ── Android ──
+                                                                                                                                                # ── Android ──
 /android/app/build/
 /android/build/
 /android/.gradle/
@@ -69,3 +69,15 @@ nul
 # Generated signing secret blob (never commit)
 argos-keystore.base64.txt
 *.base64.txt
+
+# ── Hackathon working docs (internal — must NOT go public) ──
+/hackathon-docs/
+
+# ── Local-only working files (never push) ──
+/sim-site/
+argos-desktop/scratch/
+.devin/
+argos-desktop/build_ninja/
+argos-desktop/build_output*.txt
+argos-desktop/build_clean_latest.txt
+argos-desktop/compile_commands.json

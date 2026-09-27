@@ -12,12 +12,16 @@
 #include <chrono>
 #include <cstring>
 #include <future>
+#include <sstream>
 #include <string>
+#include <thread>
 
 #include "core/app.h"
 #include "core/config.h"
 #include "core/log.h"
+#include "ui/panel_window.h"
 #include "link/link_client.h"
+#include "mcp/mcp_client.h"
 #include "phone/phone_server.h"
 #include "platform/win_util.h"
 #include "tools/tools.h"
@@ -26,12 +30,7 @@
 namespace argos {
 namespace {
 
-const char* const kChatModels[] = {"gpt-oss-120b", "zai-glm-4.7", "qwen-3.8-27b"};
-const char* const kVisionModels[] = {"qwen-3.8-27b"};
-const char* const kSpeechModels[] = {"universal-3-5-pro", "universal-streaming-english",
-                                     "universal-streaming-multilingual"};
 const char* const kAudioSources[] = {"microphone", "system", "both"};
-const char* const kModes[] = {"(server default)", "balanced", "min_latency", "max_accuracy"};
 
 bool combo_from_list(const char* label, std::string& value, const char* const* items, int count) {
     int current = 0;
@@ -80,8 +79,7 @@ void help_marker(const char* text) {
 
 void draw_status_bar() {
     Config& cfg = config();
-    const bool cerebras_ok = !cfg.cerebras.api_key.empty();
-    const bool assembly_ok = !cfg.assemblyai.api_key.empty();
+    const bool backend_ok = cfg.backend.enabled && !cfg.backend.base_url.empty();
 
     auto dot = [](bool ok, const char* label) {
         ImGui::TextColored(ok ? ImVec4(0.20f, 0.90f, 0.55f, 1.0f) : ImVec4(0.95f, 0.45f, 0.30f, 1.0f),
@@ -90,9 +88,7 @@ void draw_status_bar() {
         ImGui::TextUnformatted(label);
     };
 
-    dot(cerebras_ok, "Cerebras");
-    ImGui::SameLine(0, 18);
-    dot(assembly_ok, "AssemblyAI");
+    dot(backend_ok, "Backend");
     ImGui::SameLine(0, 18);
     ImGui::TextDisabled("|");
     ImGui::SameLine(0, 18);
@@ -106,119 +102,226 @@ void draw_settings_tab(App& application) {
     bool dirty = false;
 
     if (ImGui::BeginChild("settings_scroll", ImVec2(0, -44), ImGuiChildFlags_None)) {
-        // ── Cerebras ──
-        ImGui::SeparatorText("Cerebras (chat + vision)");
-        ImGui::TextUnformatted("API key");
-        help_marker("Stored encrypted with Windows DPAPI in %APPDATA%\\ArgosDesktop\\config.json — "
-                    "never in the project folder, never in git.");
-        if (secret_input("cerebras_key", application.cerebras_key_buffer(),
-                         App::key_buffer_size, application.reveal_cerebras_key())) {
+        // ── Backend relay ──
+        ImGui::SeparatorText("Backend (chat · STT · providers)");
+        help_marker("All AI routes through your backend: chat to {base}/api/chat, "
+                    "speech-to-text to /api/transcribe. The backend owns the "
+                    "provider keys (gpt-6-astra, gemini-flash, fable, stt) — "
+                    "Test shows which are live vs simulation.");
+        if (ImGui::Checkbox("Route chat through backend", &cfg.backend.enabled))
+            dirty = true;
+        ImGui::SetNextItemWidth(-40);
+        if (ImGui::InputText("Backend URL", &cfg.backend.base_url)) dirty = true;
+        ImGui::SetItemTooltip("e.g. http://localhost:8080 (java-backend) or "
+                              "http://localhost:8000 (FastAPI backend)");
+        ImGui::SetNextItemWidth(-40);
+        if (ImGui::InputText("Default model", &cfg.backend.default_model))
+            dirty = true;
+        ImGui::SetItemTooltip("Optional — sent as the model field/X-Argos-Model");
+        ImGui::TextUnformatted("API key (optional bearer)");
+        if (secret_input("backend_key", application.backend_key_buffer(),
+                         App::key_buffer_size, application.reveal_backend_key())) {
             dirty = true;
         }
-        ImGui::SetItemTooltip("Get a key at cloud.cerebras.ai");
-
-        ImGui::SetNextItemWidth(320);
-        if (ImGui::InputText("Base URL", &cfg.cerebras.base_url)) dirty = true;
-        ImGui::SetNextItemWidth(320);
-        if (combo_from_list("Chat model", cfg.cerebras.model, kChatModels,
-                            IM_ARRAYSIZE(kChatModels)))
-            dirty = true;
-        ImGui::SameLine();
-        help_marker("gpt-oss-120b is the fastest general model; zai-glm-4.7 is stronger; "
-                    "qwen-3.8-27b is the one that can see images.");
-        ImGui::SetNextItemWidth(320);
-        if (combo_from_list("Vision model", cfg.cerebras.vision_model, kVisionModels,
-                            IM_ARRAYSIZE(kVisionModels)))
-            dirty = true;
-        ImGui::SameLine();
-        help_marker("Used for \"what's on my screen?\". qwen-3.8-27b accepts images on the "
-                    "public shared tier.");
-
-        ImGui::SetNextItemWidth(160);
-        if (ImGui::SliderInt("Max tokens", &cfg.cerebras.max_tokens, 60, 2000)) dirty = true;
-        ImGui::SetNextItemWidth(160);
-        float temperature = static_cast<float>(cfg.cerebras.temperature);
-        if (ImGui::SliderFloat("Temperature", &temperature, 0.0f, 1.5f, "%.2f")) {
-            cfg.cerebras.temperature = temperature;
-            dirty = true;
+        ImGui::SetItemTooltip("Only needed if your backend requires auth — "
+                              "java-backend /api/chat accepts open calls");
+        static std::future<std::string> backend_probe;
+        static std::string backend_result;
+        if (backend_probe.valid() &&
+            backend_probe.wait_for(std::chrono::seconds(0)) ==
+                std::future_status::ready) {
+            backend_result = backend_probe.get();
         }
-        ImGui::SetNextItemWidth(160);
-        if (ImGui::InputInt("Timeout (s)", &cfg.cerebras.timeout_seconds)) dirty = true;
+        if (ImGui::SmallButton("Test backend")) {
+            backend_result.clear();
+            backend_probe = std::async(std::launch::async, []() -> std::string {
+                auto r = tools::execute("backend_status", {});
+                return r.ok ? r.output : "error: " + r.output;
+            });
+        }
+        ImGui::SameLine();
+        help_marker("Probes /api/health + /api/models — shows which providers "
+                    "have keys configured on the backend side");
+        if (backend_probe.valid())
+            ImGui::TextDisabled("probing backend…");
+        if (!backend_result.empty())
+            ImGui::TextWrapped("%s", backend_result.c_str());
 
         ImGui::Spacing();
-        ImGui::SeparatorText("Bitdeer (sub-agents)");
-        ImGui::TextUnformatted("API key");
-        help_marker("Optional. With a key + at least one sub-agent below, the Cerebras "
-                    "brain can delegate work to specialist models (ask_<name> tools).");
-        if (secret_input("bitdeer_key", application.bitdeer_key_buffer(),
-                         App::key_buffer_size, application.reveal_bitdeer_key())) {
-            dirty = true;
-        }
-        ImGui::SetItemTooltip("Get a key at bitdeer.ai — api-inference.bitdeer.ai/v1");
-        ImGui::SetNextItemWidth(320);
-        if (ImGui::InputText("Base URL##bitdeer", &cfg.bitdeer.base_url)) dirty = true;
-
-        ImGui::TextUnformatted("Sub-agents (Cerebras delegates via ask_<name>)");
-        int remove_at = -1;
-        for (size_t i = 0; i < cfg.bitdeer.agents.size(); ++i) {
-            auto& sa = cfg.bitdeer.agents[i];
-            ImGui::PushID((int)i);
-            ImGui::SetNextItemWidth(130);
-            if (ImGui::InputTextWithHint("##name", "name", &sa.name)) dirty = true;
+        ImGui::SeparatorText("MCP servers (external tools)");
+        help_marker("Attach any MCP server — its tools appear to the brain as "
+                    "mcp_<name>_<tool>. stdio spawns a local command (npx, python, a binary); "
+                    "http posts JSON-RPC to a streamable-HTTP endpoint.");
+        int mcp_remove = -1;
+        for (size_t i = 0; i < cfg.mcp.servers.size(); ++i) {
+            auto& s = cfg.mcp.servers[i];
+            ImGui::PushID(1000 + (int)i);
+            if (ImGui::Checkbox("##en", &s.enabled)) dirty = true;
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(250);
-            if (ImGui::InputTextWithHint("##model", "model e.g. deepseek-ai/DeepSeek-V4.1-Flash",
-                                         &sa.model))
-                dirty = true;
+            ImGui::SetNextItemWidth(110);
+            if (ImGui::InputTextWithHint("##name", "name", &s.name)) dirty = true;
             ImGui::SameLine();
-            if (ImGui::SmallButton("x")) remove_at = (int)i;
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputTextWithHint("##prompt", "role — e.g. You are a senior C++ code reviewer…",
-                                         &sa.prompt))
+            ImGui::SetNextItemWidth(75);
+            const char* kTypes[] = {"stdio", "http"};
+            int tcur = s.type == "http" ? 1 : 0;
+            if (ImGui::Combo("##type", &tcur, kTypes, 2)) {
+                s.type = kTypes[tcur];
                 dirty = true;
+            }
+            ImGui::SameLine();
+            if (s.type == "http") {
+                ImGui::SetNextItemWidth(240);
+                if (ImGui::InputTextWithHint("##url", "http://host:port/mcp", &s.url))
+                    dirty = true;
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(120);
+                if (ImGui::InputTextWithHint("##tok", "bearer (opt)", &s.token,
+                                             ImGuiInputTextFlags_Password))
+                    dirty = true;
+            } else {
+                ImGui::SetNextItemWidth(140);
+                if (ImGui::InputTextWithHint("##cmd", "command e.g. npx", &s.command))
+                    dirty = true;
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::InputTextWithHint("##args",
+                        "args e.g. -y @modelcontextprotocol/server-filesystem C:\\",
+                        &s.args))
+                    dirty = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) mcp_remove = (int)i;
             ImGui::PopID();
         }
-        if (remove_at >= 0) {
-            cfg.bitdeer.agents.erase(cfg.bitdeer.agents.begin() + remove_at);
+        if (mcp_remove >= 0) {
+            cfg.mcp.servers.erase(cfg.mcp.servers.begin() + mcp_remove);
             dirty = true;
         }
-        if (ImGui::SmallButton("+ Add sub-agent")) {
-            cfg.bitdeer.agents.push_back({"coder", "deepseek-ai/DeepSeek-V4.1-Flash",
-                                          "You are an expert programmer. Return only the "
-                                          "requested code or analysis."});
+        if (ImGui::SmallButton("+ Add MCP server")) {
+            cfg.mcp.servers.push_back({"fs", "stdio", "npx",
+                                       "-y @modelcontextprotocol/server-filesystem C:\\",
+                                       "", "", true});
             dirty = true;
         }
         ImGui::SameLine();
-        help_marker("Each row becomes an ask_<name> tool. Examples: coder=deepseek-ai/DeepSeek-V4.1-Flash, "
-                    "reviewer=zai-org/GLM-5.3-Flash, planner=zai-org/GLM-5.2.");
+        if (ImGui::SmallButton("Reconnect")) mcp::client().connect_all();
+        ImGui::SameLine();
+        // Live per-server status so the user can see the handshake result.
+        auto st = mcp::client().status();
+        if (mcp::client().connecting()) {
+            ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "connecting…");
+        } else if (st.empty()) {
+            ImGui::TextDisabled("no servers");
+        } else {
+            for (const auto& s : st) {
+                ImGui::SameLine();
+                if (s.connected)
+                    ImGui::TextColored(ImVec4(0.3f, 1, 0.4f, 1), "%s:%d",
+                                       s.name.c_str(), s.tool_count);
+                else
+                    ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "%s:!",
+                                       s.name.c_str());
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", s.connected
+                                                ? s.server_info.c_str()
+                                                : s.error.c_str());
+            }
+        }
 
         ImGui::Spacing();
-        ImGui::SeparatorText("AssemblyAI (live transcription)");
-        ImGui::TextUnformatted("API key");
-        help_marker("Streaming keys are sent only over TLS to streaming.assemblyai.com.");
-        if (secret_input("aai_key", application.assemblyai_key_buffer(),
-                         App::key_buffer_size, application.reveal_assemblyai_key())) {
-            dirty = true;
+        ImGui::SeparatorText("Voice reply (TTS)");
+        {
+            const char* engines[] = {"Murf (neural)", "Speechmatics (neural)",
+                                     "Windows built-in"};
+            const char* ids[] = {"murf", "speechmatics", "sapi"};
+            int cur = 0;
+            for (int i = 0; i < 3; ++i)
+                if (cfg.assistant.tts_engine == ids[i]) cur = i;
+            ImGui::SetNextItemWidth(260);
+            if (ImGui::BeginCombo("Engine", engines[cur])) {
+                for (int i = 0; i < 3; ++i)
+                    if (ImGui::Selectable(engines[i], i == cur)) {
+                        cfg.assistant.tts_engine = ids[i];
+                        dirty = true;
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            help_marker("Falls back to Windows SAPI if the neural engine is offline.");
         }
 
-        ImGui::SetNextItemWidth(320);
-        if (ImGui::InputText("WebSocket URL", &cfg.assemblyai.ws_url)) dirty = true;
-        ImGui::SetNextItemWidth(320);
-        if (combo_from_list("Speech model", cfg.assemblyai.speech_model, kSpeechModels,
-                            IM_ARRAYSIZE(kSpeechModels)))
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Murf");
+        ImGui::SameLine(80);
+        if (secret_input("murf_key", application.murf_key_buffer(),
+                         App::key_buffer_size, application.reveal_murf_key())) {
             dirty = true;
+        }
+        {
+            // Live voiceIds from GET /v1/speech/voices — locale-prefixed.
+            static const char* kMurfVoices[] = {
+                "en-US-terrell", "en-US-miles", "en-US-cooper", "en-US-daniel",
+                "en-US-wayne", "en-US-carter", "en-US-denzel", "en-US-ronnie",
+                "en-US-ryan", "en-US-marcus", "en-US-caleb", "en-US-charles",
+                "en-US-dylan", "en-US-evander", "en-US-paul", "en-US-lucas",
+                "en-US-jayden", "en-US-ken", "en-US-maverick", "en-US-edmund",
+                "en-US-natalie", "en-US-alina", "en-US-ariana", "en-US-amara",
+                "en-US-alicia", "en-US-angela", "en-US-daisy", "en-US-delilah",
+                "en-US-imani", "en-US-josie", "en-US-julia", "en-US-molly",
+                "en-US-samantha", "en-US-abigail", "en-US-claire",
+                "en-US-charlotte", "en-US-michelle", "en-US-phoebe",
+                "en-US-iris", "en-US-naomi", "en-US-june", "en-US-riley",
+                "en-UK-theo", "en-UK-hugo", "en-UK-gabriel", "en-UK-harrison",
+                "en-UK-finley", "en-UK-mason", "en-UK-jaxon", "en-UK-reggie",
+                "en-UK-hazel", "en-UK-juliet", "en-UK-heidi", "en-UK-amber",
+                "en-UK-pearl", "en-UK-ruby", "en-UK-katie", "en-AU-shane",
+                "en-AU-ashton", "en-AU-leyton", "en-AU-mitch", "en-AU-jimm",
+                "en-AU-joyce", "en-AU-ivy", "en-AU-evelyn", "en-AU-sophia",
+                "en-AU-kylie", "en-AU-harper", "en-SCOTT-rory",
+                "en-SCOTT-emily"};
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::BeginCombo("Voice##murf", cfg.murf.voice.c_str())) {
+                for (const char* v : kMurfVoices)
+                    if (ImGui::Selectable(v, cfg.murf.voice == v)) {
+                        cfg.murf.voice = v;
+                        dirty = true;
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            help_marker("Voice ids are locale-prefixed (en-US-*, en-UK-*, "
+                        "en-AU-*, en-SCOTT-*). Non-English ids (fr-FR-*, "
+                        "de-DE-*, ja-JP-*…) can be set in config.json.");
+        }
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::SliderInt("Rate##murf", &cfg.murf.rate, -50, 50)) dirty = true;
         ImGui::SameLine();
-        help_marker("universal-3-5-pro = best accuracy and turn detection. "
-                    "universal-streaming-english is the cheapest option.");
-        ImGui::SetNextItemWidth(320);
-        if (ImGui::InputTextWithHint("Language codes", "[\"en\"]", &cfg.assemblyai.language_codes))
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::SliderInt("Pitch##murf", &cfg.murf.pitch, -50, 50)) dirty = true;
+
+        ImGui::TextUnformatted("Speechmatics");
+        ImGui::SameLine(80);
+        if (secret_input("sm_key", application.speechmatics_key_buffer(),
+                         App::key_buffer_size,
+                         application.reveal_speechmatics_key())) {
             dirty = true;
-        ImGui::SameLine();
-        help_marker("Optional JSON list, e.g. [\"en\", \"es\"]. Leave empty to let the model "
-                    "code-switch on its own.");
-        ImGui::SetNextItemWidth(200);
-        if (combo_from_list("Mode", cfg.assemblyai.mode, kModes, IM_ARRAYSIZE(kModes))) dirty = true;
-        if (cfg.assemblyai.mode == "(server default)") cfg.assemblyai.mode.clear();
+        }
+        {
+            static const char* kSmVoices[] = {"jack", "theo", "megan", "sarah"};
+            static const char* kSmDesc[] = {"jack — US male", "theo — UK male",
+                                            "megan — US female",
+                                            "sarah — UK female"};
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::BeginCombo("Voice##sm", cfg.speechmatics.voice.c_str())) {
+                for (int i = 0; i < 4; ++i)
+                    if (ImGui::Selectable(kSmDesc[i],
+                                          cfg.speechmatics.voice == kSmVoices[i])) {
+                        cfg.speechmatics.voice = kSmVoices[i];
+                        dirty = true;
+                    }
+                ImGui::EndCombo();
+            }
+        }
 
         ImGui::Spacing();
         ImGui::SeparatorText("Audio capture");
@@ -365,44 +468,358 @@ void draw_qr_code(const std::string& payload, float target_px) {
 
 }  // namespace
 
+// --- Minimal markdown renderer for assistant replies ------------------------
+// Handles: fenced code blocks, # headers, -/* bullets, numbered lists,
+// > quotes, --- rules, **bold**, *italic*, `inline code`, ~~strike~~.
+// Renders word-by-word so styled segments still wrap correctly.
+
+struct MdRun {
+    std::string text;
+    ImFont* font = nullptr;
+    ImVec4 color{1, 1, 1, 1};
+};
+
+void md_emit_words(const std::vector<MdRun>& runs, float wrap_x) {
+    bool first = true;
+    const float line_start_x = ImGui::GetCursorPosX();
+    for (const auto& r : runs) {
+        size_t pos = 0;
+        while (pos < r.text.size()) {
+            size_t end = r.text.find(' ', pos);
+            std::string word = r.text.substr(
+                pos, end == std::string::npos ? std::string::npos : end - pos + 1);
+            pos = (end == std::string::npos) ? r.text.size() : end + 1;
+            if (word.empty()) continue;
+            const float w = ImGui::CalcTextSize(word.c_str()).x;
+            if (!first && ImGui::GetCursorPosX() + w > wrap_x) {
+                ImGui::NewLine();
+                ImGui::SetCursorPosX(line_start_x);
+            }
+            if (r.font) ImGui::PushFont(r.font);
+            ImGui::PushStyleColor(ImGuiCol_Text, r.color);
+            ImGui::TextUnformatted(word.c_str(),
+                                   word.c_str() + word.size());
+            ImGui::PopStyleColor();
+            if (r.font) ImGui::PopFont();
+            ImGui::SameLine(0, 0);
+            first = false;
+        }
+    }
+    ImGui::NewLine();
+}
+
+void md_render_line(std::string_view line, const ImVec4& base) {
+    const ImVec4 italic{base.x * 0.92f, base.y * 0.92f, base.z * 0.92f, base.w};
+    const ImVec4 code_col{0.95f, 0.78f, 0.45f, 1.0f};
+    const ImVec4 strike{base.x, base.y, base.z, base.w * 0.55f};
+    ImFont* bold = ui::font_bold();
+    ImFont* mono = ui::font_mono();
+
+    std::vector<MdRun> runs;
+    std::string cur;
+    ImFont* cur_font = nullptr;
+    ImVec4 cur_col = base;
+    bool in_bold = false, in_code = false, in_strike = false;
+
+    auto flush = [&] {
+        if (!cur.empty()) {
+            runs.push_back({cur, cur_font, cur_col});
+            cur.clear();
+        }
+    };
+    size_t i = 0;
+    while (i < line.size()) {
+        if (line.substr(i, 2) == "**" && !in_code) {
+            flush();
+            in_bold = !in_bold;
+            cur_font = (in_bold ? bold : nullptr);
+            i += 2;
+        } else if (line.substr(i, 2) == "~~" && !in_code) {
+            flush();
+            in_strike = !in_strike;
+            cur_col = in_strike ? strike : base;
+            i += 2;
+        } else if (line[i] == '`') {
+            flush();
+            in_code = !in_code;
+            cur_font = in_code ? mono : (in_bold ? bold : nullptr);
+            cur_col = in_code ? code_col : base;
+            ++i;
+        } else if (line[i] == '*' && !in_code) {
+            flush();  // single * → soft emphasis via slightly dimmer text
+            cur_col = (cur_col.x == italic.x) ? base : italic;
+            ++i;
+        } else {
+            cur += line[i++];
+        }
+    }
+    flush();
+    md_emit_words(runs, ImGui::GetWindowContentRegionMax().x);
+}
+
+void render_markdown(const std::string& md, const ImVec4& base) {
+    const ImVec4 head_col{0.45f, 0.95f, 0.85f, 1.0f};
+    const ImVec4 code_col{0.95f, 0.78f, 0.45f, 1.0f};
+    const ImVec4 quote_col{0.62f, 0.68f, 0.72f, 1.0f};
+    bool in_code = false;
+
+    std::istringstream ss(md);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("```", 0) == 0) {
+            in_code = !in_code;
+            continue;
+        }
+        if (in_code) {
+            if (ui::font_mono()) ImGui::PushFont(ui::font_mono());
+            ImGui::Indent(10);
+            ImGui::PushStyleColor(ImGuiCol_Text, code_col);
+            ImGui::TextUnformatted(line.empty() ? " " : line.c_str());
+            ImGui::PopStyleColor();
+            ImGui::Unindent(10);
+            if (ui::font_mono()) ImGui::PopFont();
+            continue;
+        }
+        if (line.empty()) {
+            ImGui::Spacing();
+            continue;
+        }
+        // horizontal rule
+        if (line == "---" || line == "***" || line == "___") {
+            ImGui::Separator();
+            continue;
+        }
+        // headers
+        int h = 0;
+        while (h < (int)line.size() && line[h] == '#') ++h;
+        if (h > 0 && h <= 6 && h < (int)line.size() && line[h] == ' ') {
+            ImFont* f = ui::font_header() ? ui::font_header() : ui::font_bold();
+            if (f) ImGui::PushFont(f);
+            md_render_line(std::string_view(line).substr(h + 1), head_col);
+            if (f) ImGui::PopFont();
+            continue;
+        }
+        // bullets
+        if ((line.rfind("- ", 0) == 0 || line.rfind("* ", 0) == 0 ||
+             line.rfind("+ ", 0) == 0)) {
+            ImGui::Indent(14);
+            ImGui::TextUnformatted("\xE2\x80\xA2 ");  // "• "
+            ImGui::SameLine(0, 0);
+            md_render_line(std::string_view(line).substr(2), base);
+            ImGui::Unindent(14);
+            continue;
+        }
+        // numbered lists — keep the number, just indent
+        {
+            size_t d = 0;
+            while (d < line.size() && isdigit((unsigned char)line[d])) ++d;
+            if (d > 0 && d < 4 && d + 1 < line.size() &&
+                (line[d] == '.' || line[d] == ')') && line[d + 1] == ' ') {
+                ImGui::Indent(14);
+                md_render_line(line, base);
+                ImGui::Unindent(14);
+                continue;
+            }
+        }
+        // quotes
+        if (line.rfind("> ", 0) == 0) {
+            ImGui::Indent(14);
+            md_render_line(std::string_view(line).substr(2), quote_col);
+            ImGui::Unindent(14);
+            continue;
+        }
+        md_render_line(line, base);
+    }
+}
+
+// --- end markdown renderer ---------------------------------------------------
+
+// Terminal-style slash commands — typed into the chat box, executed locally
+// (no model round-trip). This is where the quick controls live; the Settings
+// tab remains for the longer configuration surface.
+void run_slash_command(App& application, const std::string& line) {
+    auto& agent = application.agent();
+    const auto sp = line.find(' ');
+    std::string cmd = line.substr(
+        1, sp == std::string::npos ? std::string::npos : sp - 1);
+    std::string rest =
+        sp == std::string::npos ? "" : line.substr(sp + 1);
+    std::transform(cmd.begin(), cmd.end(), cmd.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    auto run_tool = [&agent](const char* tool, nlohmann::json args) {
+        std::thread([&agent, t = std::string(tool), args = std::move(args)] {
+            std::string out;
+            try {
+                auto r = tools::execute(t, args);
+                out = "/" + t + " → " + (r.ok ? r.output : "error: " + r.output);
+            } catch (const std::exception& e) {
+                out = "/" + t + " → error: " + e.what();
+            } catch (...) {
+                out = "/" + t + " → error: unknown exception";
+            }
+            agent.post_visible("tool", out);
+        }).detach();
+    };
+
+    if (cmd == "help") {
+        agent.post_visible(
+            "tool",
+            "slash commands:\n"
+            "  /ides            fleet status — every IDE + terminal\n"
+            "  /broadcast <msg> send a task to ALL IDEs and terminals\n"
+            "  /onboard [path]  repo recon shown here (nothing goes to the IDE)\n"
+            "  /summary [path]  glass onboarding summary popup\n"
+            "  /scan [path]     scan repo for leaked API keys\n"
+            "  /commit [msg]    stage + commit the workspace\n"
+            "  /backend         backend provider health\n"
+            "  /park            pin/release the robot\n"
+            "  /clear           wipe chat history\n"
+            "anything else — natural language goes to the model");
+    } else if (cmd == "clear") {
+        agent.clear();
+    } else if (cmd == "park") {
+        application.robot().toggle_parked();
+    } else if (cmd == "ides" || cmd == "status") {
+        run_tool("ide_status", {});
+    } else if (cmd == "backend") {
+        run_tool("backend_status", {});
+    } else if (cmd == "scan") {
+        run_tool("secret_scan", rest.empty() ? nlohmann::json::object()
+                                             : nlohmann::json{{"path", rest}});
+    } else if (cmd == "commit") {
+        run_tool("git_commit", rest.empty() ? nlohmann::json::object()
+                                            : nlohmann::json{{"message", rest}});
+    } else if (cmd == "onboard") {
+        run_tool("onboard_project", {{"send_to_ide", false}});
+    } else if (cmd == "summary") {
+        run_tool("show_onboarding_summary", {});
+    } else if (cmd == "broadcast") {
+        if (rest.empty())
+            agent.post_visible("error", "/broadcast needs a message");
+        else
+            run_tool("ide_dispatch",
+                     {{"tasks", nlohmann::json::array(
+                                    {{{"target", "all"}, {"text", rest}}})}});
+    } else {
+        agent.post_visible("error", "unknown /" + cmd + " — try /help");
+    }
+}
+
 void draw_chat_tab(App& application) {
     auto& agent = application.agent();
     if (!agent.ready()) {
-        ImGui::TextDisabled("No Cerebras API key — add one in Settings to chat.");
+        ImGui::TextDisabled("Backend not connected — enable it in Settings to chat.");
         return;
     }
 
-    ImGui::BeginChild("chat_scroll", ImVec2(0, -36),
+    // Terminal surface: dark shell background, mono font, PS-style prompts.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.02f, 0.045f, 0.055f, 1.0f));
+    if (ui::font_mono()) ImGui::PushFont(ui::font_mono());
+    ImGui::BeginChild("chat_scroll", ImVec2(0, -126),
                       ImGuiChildFlags_Border);
     for (const auto& e : agent.history()) {
         if (e.role == "user") {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
-            ImGui::TextWrapped("You: %s", e.text.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.95f, 0.55f, 1.0f));
+            ImGui::TextWrapped("C:\\argos> %s", e.text.c_str());
         } else if (e.role == "assistant") {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 1.0f, 0.75f, 1.0f));
-            ImGui::TextWrapped("Argos: %s", e.text.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.90f, 0.60f, 1.0f));
+            ImGui::TextUnformatted("argos>");
+            render_markdown(e.text, ImVec4(0.80f, 0.95f, 0.85f, 1.0f));
         } else if (e.role == "tool") {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.65f, 0.65f, 1.0f));
-            ImGui::TextWrapped("%s", e.text.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.60f, 0.55f, 1.0f));
+            ImGui::TextWrapped("  · %s", e.text.c_str());
         } else {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.55f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
             ImGui::TextWrapped("%s", e.text.c_str());
         }
         ImGui::PopStyleColor();
     }
-    if (agent.busy()) ImGui::TextDisabled("Argos is thinking…");
+    if (agent.busy()) ImGui::TextDisabled("argos> working…");
     // Keep pinned to the newest entry while the agent streams activity.
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 40)
         ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
+    if (ui::font_mono()) ImGui::PopFont();
+    ImGui::PopStyleColor();
+
+    // Follow-up suggestions — four tappable prompts refreshed after each turn
+    // so the user can fire the obvious next request without typing.
+    const auto sugs = agent.suggestions();
+    if (!sugs.empty() && !agent.busy()) {
+        const float bw = (ImGui::GetContentRegionAvail().x - 6.0f) / 2.0f;
+        for (size_t i = 0; i < sugs.size() && i < 4; ++i) {
+            if (i % 2) ImGui::SameLine();
+            std::string label = sugs[i];
+            if (label.size() > 40) label = label.substr(0, 37) + "...";
+            label += "##sug" + std::to_string(i);
+            if (ImGui::Button(label.c_str(), ImVec2(bw, 0)))
+                agent.ask_async(sugs[i]);
+        }
+        ImGui::Spacing();
+    }
+
+    // Fleet strip — connected IDEs + terminal windows, refreshed ~1/s so the
+    // user always sees what Argos can reach right now.
+    static nlohmann::json fleet = {{"ides", nlohmann::json::array()},
+                                   {"terminals", nlohmann::json::array()}};
+    static double fleet_at = 0.0;
+    if (ImGui::GetTime() - fleet_at > 1.0) {
+        fleet_at = ImGui::GetTime();
+        try {
+            fleet = tools::fleet_summary();
+        } catch (const std::exception& e) {
+            fleet = {{"ides", nlohmann::json::array()},
+                     {"terminals", nlohmann::json::array()},
+                     {"error", e.what()}};
+        } catch (...) {
+            fleet = {{"ides", nlohmann::json::array()},
+                     {"terminals", nlohmann::json::array()},
+                     {"error", "fleet scan failed"}};
+        }
+    }
+    {
+        std::ostringstream line;
+        line << "net>";
+        static const nlohmann::json kEmpty = nlohmann::json::array();
+        const auto& ides =
+            fleet.is_object() ? fleet.value("ides", kEmpty) : kEmpty;
+        const auto& terms =
+            fleet.is_object() ? fleet.value("terminals", kEmpty) : kEmpty;
+        const auto& clis =
+            fleet.is_object() ? fleet.value("clis", kEmpty) : kEmpty;
+        if (ides.empty() && terms.empty() && clis.empty()) {
+            line << " no IDEs or terminals connected";
+        } else {
+            for (const auto& e : ides)
+                line << "  [" << e.value("name", "?") << "]";
+            for (const auto& t : terms)
+                line << "  [term: " << t.value("title", "?") << "]";
+            for (const auto& c : clis) {
+                if (c.value("running", false))
+                    line << "  [cli: " << c.value("name", "?") << "]";
+            }
+            for (const auto& c : clis) {
+                if (!c.value("running", false) && c.value("installed", false) &&
+                    c.value("headline", false))
+                    line << "  [cli: " << c.value("bin", "?") << " installed]";
+            }
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.30f, 0.65f, 0.75f, 1.0f));
+        if (ui::font_mono()) ImGui::PushFont(ui::font_mono());
+        ImGui::TextWrapped("%s", line.str().c_str());
+        if (ui::font_mono()) ImGui::PopFont();
+        ImGui::PopStyleColor();
+    }
 
     static std::string input;
     ImGui::SetNextItemWidth(-90);
-    bool send = ImGui::InputTextWithHint("##chat_input",
-                                         agent.busy() ? "working…"
-                                                      : "Ask Argos…",
-                                         &input,
-                                         ImGuiInputTextFlags_EnterReturnsTrue);
+    bool send = ImGui::InputTextWithHint(
+        "##chat_input",
+        agent.busy() ? "working…" : "argos> type a message or /help",
+        &input,
+        ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     send |= ImGui::Button("Send", ImVec2(0, 0)) && !input.empty();
     ImGui::SameLine();
@@ -410,13 +827,18 @@ void draw_chat_tab(App& application) {
         agent.clear();
         input.clear();
     }
-    if (send && !input.empty() && !agent.busy()) {
-        if (agent.ask_async(input))
+    if (send && !input.empty()) {
+        if (input.front() == '/') {
+            run_slash_command(application, input);
             input.clear();
+        } else if (!agent.busy() && agent.ask_async(input)) {
+            input.clear();
+        }
     }
 }
 
 void draw_transcript_tab(App& application) {
+    (void)application;  // intentionally unused — tab shows static placeholder text
     ImGui::TextDisabled("Live transcription appears here while listening.");
     ImGui::Separator();
     ImGui::BeginChild("transcript_scroll", ImVec2(0, -40));
@@ -538,6 +960,24 @@ void draw_tools_tab(App& application) {
 
     if (!last_result.empty()) {
         ImGui::TextDisabled("last: %s", last_result.c_str());
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Onboarding");
+    help_marker("Runs the same show_onboarding_summary tool the agent uses — "
+                "opens the glass report built from ONBOARDING.md.");
+    if (ImGui::Button("Onboarding summary", ImVec2(160, 0))) {
+        pending = std::async(std::launch::async, []() -> std::string {
+            auto r = tools::execute("show_onboarding_summary", {{"path", ""}});
+            return r.ok ? r.output : "error: " + r.output;
+        });
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Onboard this repo", ImVec2(160, 0))) {
+        pending = std::async(std::launch::async, []() -> std::string {
+            auto r = tools::execute("onboard_project", {{"path", ""}});
+            return r.ok ? r.output : "error: " + r.output;
+        });
     }
 
     ImGui::Spacing();

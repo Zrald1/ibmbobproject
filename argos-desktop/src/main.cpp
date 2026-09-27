@@ -29,6 +29,24 @@ LONG WINAPI crash_handler(EXCEPTION_POINTERS* info) {
     argos::log::error(std::format("CRASH: exception 0x{:08X} in {} +0x{:X}", code,
                                   argos::win::to_utf8(module_path), offset));
 
+    // Walk the faulting stack so the log names the throwing frames.
+    void* frames[32]{};
+    const USHORT n = ::CaptureStackBackTrace(0, 32, frames, nullptr);
+    for (USHORT i = 0; i < n; ++i) {
+        wchar_t fmod[MAX_PATH] = L"(unknown)";
+        HMODULE m = nullptr;
+        if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                 reinterpret_cast<LPCWSTR>(frames[i]), &m) &&
+            m) {
+            ::GetModuleFileNameW(m, fmod, MAX_PATH);
+        }
+        const auto off = reinterpret_cast<uintptr_t>(frames[i]) -
+                         reinterpret_cast<uintptr_t>(m);
+        argos::log::error(std::format("  frame {:02}: {} +0x{:X}", i,
+                                      argos::win::to_utf8(fmod), off));
+    }
+
     if (HWND overlay = ::FindWindowW(L"ArgosDesktopOverlay", nullptr)) {
         ::ShowWindow(overlay, SW_HIDE);
     }

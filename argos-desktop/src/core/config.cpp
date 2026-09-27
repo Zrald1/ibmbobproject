@@ -24,6 +24,14 @@ nlohmann::json to_json(const Config& c) {
              {"temperature", c.cerebras.temperature},
              {"timeout_seconds", c.cerebras.timeout_seconds},
          }},
+        {"backend",
+         {
+             {"enabled", c.backend.enabled},
+             {"base_url", c.backend.base_url},
+             {"api_key", win::dpapi_protect(c.backend.api_key)},
+             {"default_model", c.backend.default_model},
+             {"timeout_seconds", c.backend.timeout_seconds},
+         }},
         {"bitdeer",
          {
              {"api_key", win::dpapi_protect(c.bitdeer.api_key)},
@@ -44,11 +52,32 @@ nlohmann::json to_json(const Config& c) {
         {"assemblyai",
          {
              {"api_key", win::dpapi_protect(c.assemblyai.api_key)},
+             {"api_base", c.assemblyai.api_base},
              {"ws_url", c.assemblyai.ws_url},
              {"speech_model", c.assemblyai.speech_model},
              {"language_codes", c.assemblyai.language_codes},
              {"language_detection", c.assemblyai.language_detection},
              {"mode", c.assemblyai.mode},
+         }},
+        {"murf",
+         {
+             {"api_key", win::dpapi_protect(c.murf.api_key)},
+             {"base_url", c.murf.base_url},
+             {"voice", c.murf.voice},
+             {"rate", c.murf.rate},
+             {"pitch", c.murf.pitch},
+         }},
+        {"speechmatics",
+         {
+             {"api_key", win::dpapi_protect(c.speechmatics.api_key)},
+             {"base_url", c.speechmatics.base_url},
+             {"voice", c.speechmatics.voice},
+         }},
+        {"voicebox",
+         {
+             {"enabled", c.voicebox.enabled},
+             {"base_url", c.voicebox.base_url},
+             {"profile", c.voicebox.profile},
          }},
         {"audio",
          {
@@ -62,6 +91,7 @@ nlohmann::json to_json(const Config& c) {
          {
              {"tts_enabled", c.assistant.tts_enabled},
              {"speak_replies", c.assistant.speak_replies},
+             {"tts_engine", c.assistant.tts_engine},
              {"tts_voice", c.assistant.tts_voice},
              {"tts_rate", c.assistant.tts_rate},
              {"tts_volume", c.assistant.tts_volume},
@@ -106,6 +136,25 @@ nlohmann::json to_json(const Config& c) {
                                    ? std::string()
                                    : win::dpapi_protect(c.link.desktop_token)},
          }},
+        {"mcp",
+         {
+             {"servers",
+              [&] {
+                  json arr = json::array();
+                  for (const auto& s : c.mcp.servers)
+                      arr.push_back(
+                          {{"name", s.name},
+                           {"type", s.type},
+                           {"command", s.command},
+                           {"args", s.args},
+                           {"url", s.url},
+                           {"token", s.token.empty()
+                                         ? std::string()
+                                         : win::dpapi_protect(s.token)},
+                           {"enabled", s.enabled}});
+                  return arr;
+              }()},
+         }},
     };
 }
 
@@ -134,6 +183,14 @@ std::string pick_secret(const nlohmann::json& j, const char* key) {
 }
 
 void from_json(const nlohmann::json& j, Config& c) {
+    if (auto it = j.find("backend"); it != j.end()) {
+        const auto& n = *it;
+        pick(n, "enabled", c.backend.enabled);
+        pick(n, "base_url", c.backend.base_url);
+        c.backend.api_key = pick_secret(n, "api_key");
+        pick(n, "default_model", c.backend.default_model);
+        pick(n, "timeout_seconds", c.backend.timeout_seconds);
+    }
     if (auto it = j.find("cerebras"); it != j.end()) {
         const auto& n = *it;
         c.cerebras.api_key = pick_secret(n, "api_key");
@@ -162,11 +219,32 @@ void from_json(const nlohmann::json& j, Config& c) {
     if (auto it = j.find("assemblyai"); it != j.end()) {
         const auto& n = *it;
         c.assemblyai.api_key = pick_secret(n, "api_key");
+        pick(n, "api_base", c.assemblyai.api_base);
         pick(n, "ws_url", c.assemblyai.ws_url);
         pick(n, "speech_model", c.assemblyai.speech_model);
         pick(n, "language_codes", c.assemblyai.language_codes);
         pick(n, "language_detection", c.assemblyai.language_detection);
         pick(n, "mode", c.assemblyai.mode);
+    }
+    if (auto it = j.find("murf"); it != j.end()) {
+        const auto& n = *it;
+        c.murf.api_key = pick_secret(n, "api_key");
+        pick(n, "base_url", c.murf.base_url);
+        pick(n, "voice", c.murf.voice);
+        pick(n, "rate", c.murf.rate);
+        pick(n, "pitch", c.murf.pitch);
+    }
+    if (auto it = j.find("speechmatics"); it != j.end()) {
+        const auto& n = *it;
+        c.speechmatics.api_key = pick_secret(n, "api_key");
+        pick(n, "base_url", c.speechmatics.base_url);
+        pick(n, "voice", c.speechmatics.voice);
+    }
+    if (auto it = j.find("voicebox"); it != j.end()) {
+        const auto& n = *it;
+        pick(n, "enabled", c.voicebox.enabled);
+        pick(n, "base_url", c.voicebox.base_url);
+        pick(n, "profile", c.voicebox.profile);
     }
     if (auto it = j.find("audio"); it != j.end()) {
         const auto& n = *it;
@@ -180,6 +258,7 @@ void from_json(const nlohmann::json& j, Config& c) {
         const auto& n = *it;
         pick(n, "tts_enabled", c.assistant.tts_enabled);
         pick(n, "speak_replies", c.assistant.speak_replies);
+        pick(n, "tts_engine", c.assistant.tts_engine);
         pick(n, "tts_voice", c.assistant.tts_voice);
         pick(n, "tts_rate", c.assistant.tts_rate);
         pick(n, "tts_volume", c.assistant.tts_volume);
@@ -220,6 +299,22 @@ void from_json(const nlohmann::json& j, Config& c) {
         pick(n, "fallback_url", c.link.fallback_url);
         pick(n, "desktop_id", c.link.desktop_id);
         c.link.desktop_token = pick_secret(n, "desktop_token");
+    }
+    if (auto it = j.find("mcp"); it != j.end()) {
+        const auto& n = *it;
+        c.mcp.servers.clear();
+        if (auto a = n.find("servers"); a != n.end() && a->is_array())
+            for (const auto& s : *a) {
+                Config::McpServer srv;
+                srv.name = s.value("name", "");
+                srv.type = s.value("type", "stdio");
+                srv.command = s.value("command", "");
+                srv.args = s.value("args", "");
+                srv.url = s.value("url", "");
+                srv.token = pick_secret(s, "token");
+                srv.enabled = s.value("enabled", true);
+                if (!srv.name.empty()) c.mcp.servers.push_back(std::move(srv));
+            }
     }
 }
 

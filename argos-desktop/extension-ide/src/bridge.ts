@@ -85,8 +85,20 @@ export class BridgeServer {
         this.server?.close();
         this.server = undefined;
         this.port = 0;
+        // Only remove the discovery file if WE wrote it — another IDE's
+        // bridge may have overwritten it while we were running.
         try {
-            fs.unlinkSync(discoveryPath());
+            const info = JSON.parse(fs.readFileSync(discoveryPath(), 'utf8'));
+            if (info.pid === process.pid && info.token === this.token) {
+                fs.unlinkSync(discoveryPath());
+            }
+        } catch {
+            /* already gone or not ours */
+        }
+        // Our per-host registration is always ours to remove.
+        try {
+            fs.unlinkSync(path.join(path.dirname(discoveryPath()),
+                                    'ide-bridge.d', `${process.pid}.json`));
         } catch {
             /* already gone */
         }
@@ -183,7 +195,10 @@ export class BridgeServer {
 
     private writeDiscoveryFile(): void {
         const file = discoveryPath();
-        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const dir = path.dirname(file);
+        fs.mkdirSync(dir, { recursive: true });
+        const regDir = path.join(dir, 'ide-bridge.d');
+        fs.mkdirSync(regDir, { recursive: true });
         const workspaceFolders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
         const info = {
             port: this.port,
@@ -197,6 +212,24 @@ export class BridgeServer {
             workspaces: workspaceFolders,
             startedAt: new Date().toISOString(),
         };
-        fs.writeFileSync(file, JSON.stringify(info, null, 2), 'utf8');
+        const payload = JSON.stringify(info, null, 2);
+        // Primary file (last writer wins) kept for backward compat, plus a
+        // per-extension-host registration so the desktop can enumerate every
+        // connected IDE, not just the most recent one.
+        fs.writeFileSync(file, payload, 'utf8');
+        fs.writeFileSync(path.join(regDir, `${process.pid}.json`), payload, 'utf8');
+        // Garbage-collect registrations whose extension host is gone.
+        try {
+            for (const f of fs.readdirSync(regDir)) {
+                if (!f.endsWith('.json')) continue;
+                const pid = parseInt(f, 10);
+                if (!pid || pid === process.pid) continue;
+                try {
+                    process.kill(pid, 0);
+                } catch {
+                    try { fs.unlinkSync(path.join(regDir, f)); } catch { /* gone */ }
+                }
+            }
+        } catch { /* GC is best-effort */ }
     }
 }

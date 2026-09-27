@@ -6,6 +6,7 @@
 #include <winhttp.h>
 
 #include <fstream>
+#include <map>
 #include <sstream>
 
 #include "core/log.h"
@@ -20,31 +21,36 @@ std::filesystem::path discovery_path() {
     return win::app_data_dir() / "ide-bridge.json";
 }
 
-}  // namespace
-
-bool IdeBridge::refresh() {
-    std::ifstream in(discovery_path());
-    if (!in) {
-        connected_ = false;
-        return false;
-    }
+std::optional<BridgeEndpoint> parse_endpoint_file(const std::filesystem::path& file) {
+    std::ifstream in(file);
+    if (!in) return std::nullopt;
     nlohmann::json info;
     try {
         in >> info;
     } catch (...) {
+        return std::nullopt;
+    }
+    BridgeEndpoint ep;
+    ep.port = info.value("port", 0);
+    ep.token = info.value("token", "");
+    ep.ide = info.value("ide", "");
+    ep.version = info.value("version", "");
+    ep.workspace = info.value("workspace", "");
+    ep.pid = info.value("pid", 0);
+    ep.main_pid = info.value("mainPid", ep.pid);
+    if (ep.port <= 0 || ep.token.empty()) return std::nullopt;
+    return ep;
+}
+
+}  // namespace
+
+bool IdeBridge::refresh() {
+    const auto ep = parse_endpoint_file(discovery_path());
+    if (!ep) {
         connected_ = false;
         return false;
     }
-    endpoint_.port = info.value("port", 0);
-    endpoint_.token = info.value("token", "");
-    endpoint_.ide = info.value("ide", "");
-    endpoint_.workspace = info.value("workspace", "");
-    endpoint_.pid = info.value("pid", 0);
-    endpoint_.main_pid = info.value("mainPid", endpoint_.pid);
-    if (endpoint_.port <= 0 || endpoint_.token.empty()) {
-        connected_ = false;
-        return false;
-    }
+    endpoint_ = *ep;
     // Cheap authenticated liveness check.
     connected_ = call("ide.ping").has_value();
     return connected_;
@@ -75,8 +81,68 @@ std::optional<nlohmann::json> IdeBridge::call(std::string_view method,
     return response.value("result", nlohmann::json::object());
 }
 
+std::optional<nlohmann::json> IdeBridge::call_on(
+    const BridgeEndpoint& ep, std::string_view method,
+    const nlohmann::json& params) {
+    nlohmann::json envelope{{"method", method}, {"params", params}};
+    const auto body = post_on(ep, "/command", envelope.dump());
+    if (!body) return std::nullopt;
+    nlohmann::json response;
+    try {
+        response = nlohmann::json::parse(*body);
+    } catch (...) {
+        return std::nullopt;
+    }
+    if (!response.value("ok", false)) return std::nullopt;
+    return response.value("result", nlohmann::json::object());
+}
+
+std::vector<BridgeEndpoint> IdeBridge::enumerate() {
+    std::map<int, BridgeEndpoint> by_pid;
+    const auto dir = discovery_path().parent_path();
+    std::vector<std::filesystem::path> files{discovery_path()};
+    std::error_code ec;
+    for (const auto& e :
+         std::filesystem::directory_iterator(dir / "ide-bridge.d", ec)) {
+        if (e.path().extension() == ".json") files.push_back(e.path());
+    }
+    for (const auto& f : files) {
+        const auto ep = parse_endpoint_file(f);
+        if (ep && !by_pid.count(ep->pid) && call_on(*ep, "ide.ping"))
+            by_pid[ep->pid] = *ep;
+    }
+    std::vector<BridgeEndpoint> out;
+    for (auto& [pid, ep] : by_pid) out.push_back(ep);
+    return out;
+}
+
+std::vector<BridgeEndpoint> IdeBridge::registered() {
+    std::map<int, BridgeEndpoint> by_pid;
+    std::vector<std::filesystem::path> files{discovery_path()};
+    std::error_code ec;
+    for (const auto& e :
+         std::filesystem::directory_iterator(discovery_path().parent_path() /
+                                             "ide-bridge.d", ec)) {
+        if (e.path().extension() == ".json") files.push_back(e.path());
+    }
+    for (const auto& f : files) {
+        const auto ep = parse_endpoint_file(f);
+        if (ep) by_pid[ep->pid] = *ep;
+    }
+    std::vector<BridgeEndpoint> out;
+    for (auto& [pid, ep] : by_pid) out.push_back(ep);
+    return out;
+}
+
 std::optional<std::string> IdeBridge::http_post(std::string_view path,
                                                 std::string_view body) {
+    return post_on(endpoint_, path, body, &last_error_);
+}
+
+std::optional<std::string> IdeBridge::post_on(const BridgeEndpoint& ep,
+                                              std::string_view path,
+                                              std::string_view body,
+                                              std::string* err) {
     HINTERNET session =
         WinHttpOpen(L"ArgosDesktop/0.1", WINHTTP_ACCESS_TYPE_NO_PROXY,
                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -100,7 +166,7 @@ std::optional<std::string> IdeBridge::http_post(std::string_view path,
     WinHttpSetTimeouts(session, kTimeoutMs, kTimeoutMs, kTimeoutMs, kTimeoutMs);
 
     connection = WinHttpConnect(session, L"127.0.0.1",
-                                static_cast<INTERNET_PORT>(endpoint_.port), 0);
+                                static_cast<INTERNET_PORT>(ep.port), 0);
     if (!connection) return std::nullopt;
 
     request = WinHttpOpenRequest(connection, L"POST", win::to_wide(path).c_str(),
@@ -109,7 +175,7 @@ std::optional<std::string> IdeBridge::http_post(std::string_view path,
     if (!request) return std::nullopt;
 
     std::wstring headers = L"Content-Type: application/json\r\nAuthorization: Bearer ";
-    headers += win::to_wide(endpoint_.token);
+    headers += win::to_wide(ep.token);
     headers += L"\r\n";
 
     if (!WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
@@ -127,7 +193,7 @@ std::optional<std::string> IdeBridge::http_post(std::string_view path,
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &size,
                         WINHTTP_NO_HEADER_INDEX);
     if (status < 200 || status >= 300) {
-        last_error_ = "bridge HTTP " + std::to_string(status);
+        if (err) *err = "bridge HTTP " + std::to_string(status);
         return std::nullopt;
     }
 

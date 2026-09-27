@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -20,6 +21,7 @@ struct BridgeEndpoint {
     int port = 0;
     std::string token;
     std::string ide;
+    std::string version;
     std::string workspace;
     int pid = 0;       // extension host
     int main_pid = 0;  // IDE process that owns the window (fallback: pid)
@@ -40,10 +42,28 @@ public:
     std::optional<nlohmann::json> call(std::string_view method,
                                        const nlohmann::json& params = nlohmann::json::object());
 
+    // Every live bridge: the primary registration plus each entry in
+    // ide-bridge.d/ whose ping answers. Dead registrations are skipped.
+    static std::vector<BridgeEndpoint> enumerate();
+
+    // Registration files only — no ping. Cheap enough to call per frame for
+    // status UI; entries may include IDEs that exited without deregistering.
+    static std::vector<BridgeEndpoint> registered();
+
+    // POST /command against an explicit endpoint — used by enumerate() and
+    // tools that report on the whole IDE fleet.
+    static std::optional<nlohmann::json> call_on(
+        const BridgeEndpoint& ep, std::string_view method,
+        const nlohmann::json& params = nlohmann::json::object());
+
     const std::string& last_error() const { return last_error_; }
 
 private:
     std::optional<std::string> http_post(std::string_view path, std::string_view body);
+    static std::optional<std::string> post_on(const BridgeEndpoint& ep,
+                                            std::string_view path,
+                                            std::string_view body,
+                                            std::string* err = nullptr);
 
     BridgeEndpoint endpoint_;
     bool connected_ = false;

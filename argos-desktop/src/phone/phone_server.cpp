@@ -322,7 +322,17 @@ void PhoneServer::accept_loop() {
         if (c == INVALID_SOCKET) break;  // listener closed
         DWORD timeout = 15000;           // phones stall; don't leak threads
         setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-        std::thread(&PhoneServer::handle_client, this, (uintptr_t)c).detach();
+        std::thread([this, c] {
+            try {
+                handle_client((uintptr_t)c);
+            } catch (const std::exception& e) {
+                log::error(std::string("phone client threw: ") + e.what());
+                closesocket(c);
+            } catch (...) {
+                log::error("phone client threw (unknown exception)");
+                closesocket(c);
+            }
+        }).detach();
     }
 }
 

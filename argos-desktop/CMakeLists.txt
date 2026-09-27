@@ -54,7 +54,8 @@ target_compile_options(argos PRIVATE
 )
 
 target_link_options(argos PRIVATE
-    $<$<CONFIG:Release>:/LTCG>
+    $<$<CONFIG:Release>:/LTCG /DEBUG:FULL>
+    /MAP
 )
 
 target_link_libraries(argos PRIVATE

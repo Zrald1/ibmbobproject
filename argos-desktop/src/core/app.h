@@ -13,6 +13,7 @@
 #include "gfx/device.h"
 #include "ui/panel_window.h"
 #include "ui/robot_overlay.h"
+#include "ui/summary_overlay.h"
 
 namespace argos {
 
@@ -25,6 +26,7 @@ public:
     gfx::Device& gfx() { return gfx_; }
     ui::PanelWindow& panel() { return panel_; }
     ui::RobotOverlay& robot() { return robot_; }
+    ui::SummaryOverlay& summary() { return summary_; }
     bridge::IdeBridge& ide() { return ide_; }
     agent::Agent& agent() { return agent_; }
     HINSTANCE hinst() const { return instance_; }
@@ -36,13 +38,13 @@ public:
     bool& settings_dirty() { return settings_dirty_; }
     void toast(std::string message, double seconds = 4.0);
 
-    char* cerebras_key_buffer() { return api_key_input_; }
-    char* assemblyai_key_buffer() { return aai_key_input_; }
-    char* bitdeer_key_buffer() { return bitdeer_key_input_; }
+    char* murf_key_buffer() { return murf_key_input_; }
+    char* speechmatics_key_buffer() { return sm_key_input_; }
+    char* backend_key_buffer() { return backend_key_input_; }
     static constexpr size_t key_buffer_size = 256;
-    bool& reveal_cerebras_key() { return show_api_key_; }
-    bool& reveal_assemblyai_key() { return show_aai_key_; }
-    bool& reveal_bitdeer_key() { return show_bitdeer_key_; }
+    bool& reveal_murf_key() { return show_murf_key_; }
+    bool& reveal_speechmatics_key() { return show_sm_key_; }
+    bool& reveal_backend_key() { return show_backend_key_; }
     std::string& toast_message() { return toast_message_; }
     double toast_deadline() const { return toast_until_; }
 
@@ -53,18 +55,19 @@ private:
     gfx::Device gfx_;
     ui::PanelWindow panel_;
     ui::RobotOverlay robot_;
+    ui::SummaryOverlay summary_;
     bridge::IdeBridge ide_;
     agent::Agent agent_;
     bool running_ = true;
     bool settings_dirty_ = false;
 
     // Transient UI state
-    char api_key_input_[256]{};
-    char aai_key_input_[256]{};
-    char bitdeer_key_input_[256]{};
-    bool show_api_key_ = false;
-    bool show_aai_key_ = false;
-    bool show_bitdeer_key_ = false;
+    char murf_key_input_[256]{};
+    char sm_key_input_[256]{};
+    char backend_key_input_[256]{};
+    bool show_murf_key_ = false;
+    bool show_sm_key_ = false;
+    bool show_backend_key_ = false;
     std::string toast_message_;
     double toast_until_ = 0.0;
 };

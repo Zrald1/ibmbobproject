@@ -170,16 +170,19 @@ public abstract class AbstractAiProvider implements AiModelProvider {
     private String liveCompletion(AiProperties.Provider cfg, String systemPrompt,
                                   List<ChatMessage> history, String message, String screenContext) {
         List<Map<String, String>> messages = new ArrayList<>();
-        messages.add(Map.of("role", "system", "content", systemPrompt));
+        // Screen context must ride INSIDE the leading system message — providers
+        // like Cerebras/Qwen reject a second system message placed after history.
+        String sys = systemPrompt;
+        if (screenContext != null && !screenContext.isBlank()) {
+            sys += "\n\nContext: " + screenContext;
+        }
+        messages.add(Map.of("role", "system", "content", sys));
         if (history != null) {
             for (ChatMessage m : history) {
                 if (m != null && m.role() != null && m.content() != null) {
                     messages.add(Map.of("role", m.role(), "content", m.content()));
                 }
             }
-        }
-        if (screenContext != null && !screenContext.isBlank()) {
-            messages.add(Map.of("role", "system", "content", "Screen context: " + screenContext));
         }
         messages.add(Map.of("role", "user", "content", message == null ? "" : message));
 

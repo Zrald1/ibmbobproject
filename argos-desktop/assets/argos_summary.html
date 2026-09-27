@@ -1,0 +1,229 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="marked.min.js"></script>
+<script src="mermaid.min.js"></script>
+<style>
+  html, body {
+    margin: 0; height: 100%; background: transparent;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    position: absolute; inset: 10px;
+    background: rgba(10, 13, 18, 0.80);
+    border: 1px solid rgba(0, 229, 204, 0.28);
+    border-radius: 16px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.65),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; flex: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  h1.title {
+    margin: 0; font-size: 13px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: #5eead4;
+  }
+  #close {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06); color: #cfd8e3;
+    width: 26px; height: 26px; border-radius: 8px; cursor: pointer;
+    font-size: 15px; line-height: 1;
+  }
+  #close:hover { background: rgba(255, 90, 90, 0.25); color: #fff; }
+  .body { display: flex; flex: 1; min-height: 0; }
+  #toc {
+    flex: none; width: 210px; overflow-y: auto; padding: 14px 10px;
+    border-right: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgba(255, 255, 255, 0.02);
+  }
+  #toc::-webkit-scrollbar, #content::-webkit-scrollbar { width: 8px; }
+  #toc::-webkit-scrollbar-thumb, #content::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.14); border-radius: 4px;
+  }
+  #toc a {
+    display: block; padding: 5px 10px; margin: 1px 0;
+    color: #8fa2b5; text-decoration: none; font-size: 12px;
+    border-radius: 6px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #toc a:hover { background: rgba(255, 255, 255, 0.07); color: #dbe4ee; }
+  #toc a.active { background: rgba(0, 229, 204, 0.14); color: #5eead4; }
+  #toc a.l2 { padding-left: 22px; font-size: 11.5px; }
+  #toc a.l3 { padding-left: 34px; font-size: 11px; color: #71808f; }
+  #content {
+    flex: 1; overflow-y: auto; padding: 18px 22px 26px;
+    color: #dbe4ee; font-size: 13.5px; line-height: 1.62;
+    scroll-behavior: smooth;
+  }
+  #content h1, #content h2, #content h3, #content h4 {
+    color: #7dd3fc; letter-spacing: 0.02em; margin: 1.1em 0 0.4em;
+    scroll-margin-top: 10px;
+  }
+  #content h1 { font-size: 20px; }
+  #content h2 { font-size: 16px; border-bottom: 1px solid rgba(255,255,255,.08); padding-bottom: 4px; }
+  #content h3 { font-size: 14px; }
+  #content code {
+    background: rgba(255, 255, 255, 0.08); border-radius: 4px;
+    padding: 1px 5px; font-size: 12.5px; color: #fbbf77;
+    font-family: "Cascadia Code", Consolas, monospace;
+  }
+  #content pre {
+    background: rgba(0, 0, 0, 0.45); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 10px; padding: 12px 14px; overflow-x: auto;
+  }
+  #content pre code { background: none; padding: 0; color: #d5e2f0; }
+  #content ul, #content ol { padding-left: 20px; }
+  #content li { margin: 3px 0; }
+  #content blockquote {
+    margin: 10px 0; padding: 6px 14px; color: #9fb0c3;
+    border-left: 3px solid rgba(0, 229, 204, 0.4);
+    background: rgba(255, 255, 255, 0.03); border-radius: 0 8px 8px 0;
+  }
+  #content table { border-collapse: collapse; margin: 10px 0; }
+  #content th, #content td {
+    border: 1px solid rgba(255,255,255,.12); padding: 5px 10px; font-size: 12.5px;
+  }
+  #content th { background: rgba(255,255,255,.06); color: #7dd3fc; }
+  .mermaid {
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(125, 211, 252, 0.18);
+    border-radius: 10px; padding: 14px; margin: 14px 0;
+    text-align: center; overflow-x: auto;
+  }
+  .file-link {
+    color: #5eead4 !important; cursor: pointer;
+    border-bottom: 1px dashed rgba(94, 234, 212, 0.45);
+  }
+  .file-link:hover { background: rgba(0, 229, 204, 0.18) !important; }
+  .loading { color: #5c6b7d; padding: 30px 0; text-align: center; }
+  .toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: rgba(0, 229, 204, 0.92); color: #04110f;
+    padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600;
+    opacity: 0; transition: opacity .25s; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <h1 class="title" id="title">Onboarding summary</h1>
+      <button id="close" title="Dismiss">&times;</button>
+    </header>
+    <div class="body">
+      <nav id="toc"></nav>
+      <div id="content"><div class="loading">Waiting for onboarding data…</div></div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+<script>
+  if (window.mermaid) {
+    mermaid.initialize({ startOnLoad: false, theme: "dark",
+                         securityLevel: "loose", flowchart: { htmlLabels: true } });
+  }
+  function esc(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+  function post(obj) {
+    try { chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) {}
+  }
+  function toast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg; t.style.opacity = 1;
+    clearTimeout(t._h); t._h = setTimeout(function () { t.style.opacity = 0; }, 1800);
+  }
+  document.getElementById("close").onclick = function () { post({fn: "close"}); };
+
+  var FILE_RE = /^(?:[A-Za-z]:[\\/])?[\w.\-]+(?:[\\/][\w.\-]+)*\.(?:cpp|cc|c|h|hpp|ts|tsx|js|jsx|json|md|txt|yml|yaml|toml|cmake|html|css|ps1|bat|sh|py|rs|java|xml|ini|cfg)$/i;
+
+  // Turn inline `code` that looks like a file path into a link that opens the
+  // file in the connected IDE, so the user can jump from summary to source.
+  function linkifyFiles(root) {
+    root.querySelectorAll("code").forEach(function (c) {
+      if (c.closest("pre") || c.closest("a")) return;
+      const t = c.textContent.trim();
+      if (!FILE_RE.test(t)) return;
+      const a = document.createElement("a");
+      a.className = "file-link"; a.textContent = t;
+      a.title = "Open in IDE";
+      a.onclick = function () {
+        post({fn: "open_file", path: t});
+        toast("Opening " + t + " in the IDE…");
+      };
+      c.replaceWith(a);
+    });
+    root.querySelectorAll("a[href]").forEach(function (a) {
+      const href = a.getAttribute("href") || "";
+      if (!FILE_RE.test(href) || a.classList.contains("file-link")) return;
+      a.classList.add("file-link"); a.title = "Open in IDE";
+      a.onclick = function (e) {
+        e.preventDefault();
+        post({fn: "open_file", path: href});
+        toast("Opening " + href + " in the IDE…");
+      };
+    });
+  }
+
+  function buildToc(contentEl) {
+    const toc = document.getElementById("toc");
+    toc.innerHTML = "";
+    const heads = contentEl.querySelectorAll("h1,h2,h3");
+    heads.forEach(function (h, i) {
+      const id = "sec-" + i; h.id = id;
+      const a = document.createElement("a");
+      a.textContent = h.textContent;
+      a.className = "l" + h.tagName[1];
+      a.href = "#" + id;
+      a.onclick = function (e) {
+        e.preventDefault();
+        document.getElementById(id).scrollIntoView({behavior: "smooth"});
+      };
+      toc.appendChild(a);
+    });
+    // Highlight the section nearest the top while scrolling.
+    contentEl.onscroll = function () {
+      let current = 0;
+      heads.forEach(function (h, i) {
+        if (h.getBoundingClientRect().top < 140) current = i;
+      });
+      toc.querySelectorAll("a").forEach(function (a, i) {
+        a.classList.toggle("active", i === current);
+      });
+    };
+  }
+
+  window.ArgosSummary = {
+    render: function (payload) {
+      document.getElementById("title").textContent =
+        payload.title || "Onboarding summary";
+      const el = document.getElementById("content");
+      el.innerHTML = window.marked
+        ? marked.parse(payload.markdown || "")
+        : "<pre>" + esc(payload.markdown || "") + "</pre>";
+      if (payload.mermaid && window.mermaid) {
+        const d = document.createElement("div");
+        d.className = "mermaid";
+        d.textContent = payload.mermaid;
+        el.insertBefore(d, el.firstChild);
+        try { mermaid.run({ nodes: [d] }); }
+        catch (e) { d.innerHTML = "<pre>" + esc(payload.mermaid) + "</pre>"; }
+      } else if (payload.mermaid) {
+        const d = document.createElement("pre");
+        d.textContent = payload.mermaid;
+        el.insertBefore(d, el.firstChild);
+      }
+      linkifyFiles(el);
+      buildToc(el);
+      el.scrollTop = 0;
+    }
+  };
+</script>
+</body>
+</html>

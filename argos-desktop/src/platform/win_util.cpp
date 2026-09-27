@@ -169,6 +169,18 @@ void send_chord(WORD vk) {
     send_key(VK_CONTROL, false);
 }
 
+// A zero-distance mouse move: registers a real input event from this process
+// (which the foreground lock requires) without any UI side effect. Replaces
+// the classic Alt tap, which opens the menu bar in VS Code-family apps.
+void nudge_input() {
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    in.mi.dx = 0;
+    in.mi.dy = 0;
+    ::SendInput(1, &in, sizeof(INPUT));
+}
+
 }  // namespace
 
 bool bring_process_to_front(DWORD pid) {
@@ -192,31 +204,58 @@ bool bring_process_to_front(DWORD pid) {
         reinterpret_cast<LPARAM>(&ctx));
     target = ctx.found;
     if (!target) return false;
+    return bring_window_to_front(target);
+}
+
+// Force `target` to the foreground. Foreground-lock workaround: temporarily
+// zero the timeout so any process may take the foreground, then join input
+// queues and switch. Retried — focus stealing is racy and a single attempt
+// can silently lose to whatever the target IDE just focused internally
+// (e.g. its terminal).
+static bool raise_window(HWND target) {
+    if (!target || !::IsWindow(target)) return false;
     if (::IsIconic(target)) ::ShowWindow(target, SW_RESTORE);
 
-    // Foreground-lock workaround: temporarily zero the timeout so any process
-    // may take the foreground, then join input queues and switch.
     DWORD old_timeout = 0;
     ::SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &old_timeout, 0);
     ::SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, nullptr,
                             SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
-    send_key(VK_MENU, true);
-    send_key(VK_MENU, false);
-    const DWORD fg_thread = ::GetWindowThreadProcessId(::GetForegroundWindow(), nullptr);
-    const DWORD target_thread = ::GetWindowThreadProcessId(target, nullptr);
     const DWORD self = ::GetCurrentThreadId();
-    ::AttachThreadInput(self, fg_thread, TRUE);
-    ::AttachThreadInput(self, target_thread, TRUE);
-    ::BringWindowToTop(target);
-    ::SetForegroundWindow(target);
-    ::SetActiveWindow(target);
-    ::SetFocus(target);
-    ::AttachThreadInput(self, target_thread, FALSE);
-    ::AttachThreadInput(self, fg_thread, FALSE);
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        // A real (but inert) input event satisfies the foreground lock; the
+        // Alt tap used to do this but opens menus in VS Code-family apps.
+        nudge_input();
+        const DWORD fg_thread =
+            ::GetWindowThreadProcessId(::GetForegroundWindow(), nullptr);
+        const DWORD target_thread = ::GetWindowThreadProcessId(target, nullptr);
+        ::AttachThreadInput(self, fg_thread, TRUE);
+        ::AttachThreadInput(self, target_thread, TRUE);
+        // TOPMOST flip forces the window above everything even if the
+        // foreground switch itself gets vetoed mid-race.
+        ::SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        ::BringWindowToTop(target);
+        ::SetForegroundWindow(target);
+        ::SetActiveWindow(target);
+        ::SetFocus(target);
+        ::AttachThreadInput(self, target_thread, FALSE);
+        ::AttachThreadInput(self, fg_thread, FALSE);
+        ::Sleep(120);
+        if (::GetForegroundWindow() == target) break;
+        ::SetWindowPos(target, HWND_NOTOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        ::Sleep(160);
+    }
+    ::SetWindowPos(target, HWND_NOTOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     ::SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
-                            reinterpret_cast<PVOID>(old_timeout),
+                            reinterpret_cast<PVOID>(static_cast<ULONG_PTR>(old_timeout)),
                             SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
     return ::GetForegroundWindow() == target;
+}
+
+bool bring_window_to_front(HWND hwnd) {
+    return raise_window(hwnd);
 }
 
 bool send_paste_only() {
@@ -228,7 +267,7 @@ bool send_paste_enter() {
     // Focus must already be on the target input; small sleeps give the chat
     // webview a moment to accept the paste before Enter arrives.
     send_chord('V');
-    ::Sleep(180);
+    ::Sleep(400);
     send_key(VK_RETURN, true);
     send_key(VK_RETURN, false);
     return true;

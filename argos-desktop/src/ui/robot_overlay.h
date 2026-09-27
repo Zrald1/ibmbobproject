@@ -29,6 +29,7 @@
 
 #include <WebView2.h>
 
+#include <chrono>
 #include <functional>
 #include <string>
 
@@ -57,12 +58,15 @@ public:
     void set_talking(bool on);
     void set_listening(bool on);
     void set_recording(bool on);
-    void on_speak_word(const std::string& word, int index);
+    void on_speak_word(int start, int end, const std::string& word);
     void set_standby(bool on);
     void hide_eyes();
     void show_eyes();
     void move_to(int x, int y);
     void set_robot_size(int size);
+
+    // Triple-click park pin — also exposed for the chat /park slash command.
+    void toggle_parked();
     void play_expression_sequence(const std::string& json_array);
 
     // Runs arbitrary JS against the scene (used by the tool executor for the
@@ -71,7 +75,26 @@ public:
 
     void set_tap_handler(TapHandler handler) { on_tap_ = std::move(handler); }
 
-    // Pumps the click-through state machine; call once per frame.
+    // Mark user/system activity (drag, task, voice, phone command). Roaming
+    // is only allowed after kRoamIdleSeconds of quiet — the scene is told
+    // via ArgosJS.setHostIdle from tick().
+    void notify_activity() { last_activity_ = std::chrono::steady_clock::now(); }
+    static constexpr double kRoamIdleSeconds = 60.0;
+
+    // Pin the robot in place — the summary overlay sets this while it's open
+    // so the scene can't start roaming mid-read.
+    void set_roam_hold(bool on) { roam_hold_ = on; }
+
+    // Triple-click toggle: parks the robot at its current position — no roam,
+    // no scene-driven relocation — until triple-clicked again.
+    bool parked() const { return parked_; }
+
+    // Held while the control panel / chatbox is open — the robot must stay
+    // put wherever it is while the user reads and types.
+    void set_panel_hold(bool on) { panel_hold_ = on; }
+
+    // Pumps the click-through state machine and the idle-roam gate; call
+    // once per frame.
     void tick();
 
 private:
@@ -123,6 +146,23 @@ private:
     bool dragging_ = false;
     POINT drag_grab_{};
     ULONGLONG last_heartbeat_ = 0;
+
+    // Idle-roam gate: last activity timestamp (init = process start, so the
+    // first roam needs a real 60s of uptime+quiet) and the value last pushed
+    // to the scene — js_idle_ starts false matching the scene's default.
+    std::chrono::steady_clock::time_point last_activity_ =
+        std::chrono::steady_clock::now();
+    bool js_idle_ = false;
+    bool roam_hold_ = false;   // summary overlay is open — stay parked
+    bool panel_hold_ = false;  // control panel is open — stay parked
+    bool parked_ = false;      // triple-click pin — stay at this position
+    bool work_hold_ = false;   // agent/tool running — no roaming mid-task
+
+    // Triple-click detection: Windows sends DOWN, UP, DBLCLK, UP, DOWN, UP —
+    // counting both DOWN and DBLCLK inside one double-click window reaches 3
+    // on the third press.
+    DWORD last_click_tick_ = 0;
+    int click_streak_ = 0;
 
     TapHandler on_tap_;
 };

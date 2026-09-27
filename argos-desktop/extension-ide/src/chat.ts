@@ -18,7 +18,7 @@ export interface ChatProvider {
     id: string;
     name: string;
     extensionIds: string[];
-    focusCommands: string[];
+    focusCommands: (string | Step[])[];
     sendPlans: Step[][];
     newCommands: string[];
 }
@@ -96,10 +96,30 @@ const PROVIDERS: ChatProvider[] = [
     },
     {
         // Any other assistant pane (Tabnine, Amazon Q, custom webviews, ...).
+        // Any other assistant pane (IBM Bob, Tabnine, Amazon Q, custom
+        // webviews, ...). Focus plans are multi-step: open the chat surface
+        // first, then focus its input — commands that don't exist in the host
+        // are skipped silently.
         id: 'generic',
         name: 'Generic chat view',
         extensionIds: [],
-        focusCommands: ['workbench.action.chat.open', 'workbench.panel.chat'],
+        focusCommands: [
+            [
+                { command: 'workbench.action.chat.open' },
+                { command: 'workbench.action.chat.focusInput' },
+            ],
+            [
+                { command: 'workbench.action.chat.open' },
+                { command: 'workbench.panel.chat.view.copilot.focus' },
+            ],
+            [{ command: 'workbench.action.chat.open' }, { command: 'chat.action.focus' }],
+            'workbench.action.chat.open',
+            'workbench.panel.chat',
+        ],
+        // No programmatic send: VS Code forks like IBM Bob ACCEPT the
+        // chat.open{query} command without throwing but silently ignore the
+        // query — a false "delivered". Return needs-paste so the desktop does
+        // its robust focus + Ctrl+V + Enter into the (now focused) input.
         sendPlans: [],
         newCommands: [],
     },
@@ -139,11 +159,14 @@ function pickProvider(requested?: string): ChatProvider | undefined {
     return installed.find((p) => p.extensionIds.length > 0) || PROVIDERS.find((p) => p.id === 'generic');
 }
 
-async function trySteps(commands: string[] | Step[][], text = ''): Promise<boolean> {
-    const plans: Step[][] =
-        typeof commands[0] === 'string'
-            ? (commands as string[]).map((c) => [{ command: c }])
-            : (commands as Step[][]);
+async function trySteps(
+    commands: (string | Step[])[] | Step[][],
+    text = '',
+): Promise<boolean> {
+    // Entries may be bare command strings or multi-step plans — normalize.
+    const plans: Step[][] = (commands as (string | Step[])[]).map((entry) =>
+        typeof entry === 'string' ? [{ command: entry }] : entry,
+    );
     for (const plan of plans) {
         let ok = true;
         for (const step of plan) {
@@ -169,6 +192,20 @@ export async function focusChat(providerId?: string): Promise<{ provider: string
     return { provider: provider.id, focused };
 }
 
+// IBM Bob's own chat API — cached after the first lookup. Other hosts simply
+// never have the command, so this stays a no-op for plain VS Code.
+let bobCommandCache: boolean | undefined;
+async function hasBobMessageCommand(): Promise<boolean> {
+    if (bobCommandCache !== undefined) return bobCommandCache;
+    try {
+        const all = await vscode.commands.getCommands(true);
+        bobCommandCache = all.includes('bob-code.sendMessageWithHiddenPrompt');
+    } catch {
+        bobCommandCache = false;
+    }
+    return bobCommandCache;
+}
+
 export async function newChat(providerId?: string): Promise<{ provider: string; ok: boolean }> {
     const provider = pickProvider(providerId);
     if (!provider) throw new Error('no chat provider available');
@@ -183,6 +220,19 @@ export async function sendToChat(
 ): Promise<{ provider: string; delivered: 'command' | 'needs-paste'; detail?: string }> {
     const provider = pickProvider(providerId);
     if (!provider) throw new Error('no chat provider available');
+
+    // VS Code forks with their own chat API (IBM Bob) expose a native message
+    // command — verified: it creates a real task and Bob answers it. Far more
+    // reliable than any focus/paste dance, so prefer it whenever present.
+    if (await hasBobMessageCommand()) {
+        try {
+            await vscode.commands.executeCommand(
+                'bob-code.sendMessageWithHiddenPrompt', text, text);
+            return { provider: provider.id, delivered: 'command' };
+        } catch {
+            /* fall through to the generic plans below */
+        }
+    }
 
     for (const plan of provider.sendPlans) {
         const steps = submit ? plan : plan.slice(0, 1);

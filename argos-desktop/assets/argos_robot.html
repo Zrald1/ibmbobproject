@@ -968,11 +968,18 @@ function stopDancing() {
 
 window.ArgosJS = {
     setState: function(state) {
+        var wasListening = (currentState === STATES.LISTENING);
         currentState = state;
         stateTimer = 0;
         if (state === STATES.SPINNING) spinTimer = 0;
         if (state === STATES.THINKING) thinkingGroup.visible = true;
         else thinkingGroup.visible = false;
+        if (state === STATES.LISTENING) {
+            currentExpression = EXPRESSIONS.LISTENING;
+            applyHandGesture('OPEN');   // neon hands come out while listening
+        } else if (wasListening) {
+            applyHandGesture('NONE');   // tuck them away on any exit
+        }
         updateExpression();
     },
     setThinking: function(val) {
@@ -991,6 +998,21 @@ window.ArgosJS = {
             }
         }
         updateExpression();
+    },
+    // Full scene freeze — desktop parks the Three.js animation while Argos
+    // talks so the robot never wanders or gestures mid-sentence. RAF keeps
+    // running; we just skip updates so the last frame holds.
+    setFrozen: function(val) {
+        sceneFrozen = !!val;
+        lastTime = performance.now();
+        lastRenderTime = 0;
+        if (sceneFrozen) {
+            // Render one clean final frame — otherwise the overlay holds the
+            // exact last frame including the thinking dots ("loading" bubble)
+            // if we froze mid-thought.
+            thinkingGroup.visible = false;
+            try { renderer.render(scene, camera); } catch (e) {}
+        }
     },
     setTalking: function(val) {
         if (val) {
@@ -1932,10 +1954,12 @@ function lerp(current, target, speed) {
 // ── Main animation loop ──
 let lastTime = performance.now();
 let lastRenderTime = 0;
+let sceneFrozen = false;  // ArgosJS.setFrozen — hold the last frame
 
 function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
+    if (sceneFrozen) { lastTime = now; lastRenderTime = now; return; }
     // Cap to ~30 FPS. This is a floating phone overlay — 60 fps buys nothing
     // visible here but roughly doubles GPU/CPU cost, which is what shows up as
     // "lag" on the 3D model. dt is still measured from the last *rendered*

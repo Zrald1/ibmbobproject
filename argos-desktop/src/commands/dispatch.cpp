@@ -6,6 +6,7 @@
 #include "core/app.h"
 #include "core/config.h"
 #include "core/log.h"
+#include "mcp/mcp_client.h"
 #include "tools/tools.h"
 #include "voice/voice.h"
 
@@ -25,12 +26,23 @@ std::string hostname() {
 
 json dispatch(const std::string& method, const json& params) {
     auto& a = app();
+    a.robot().notify_activity();  // any command counts as "in use" for roam gating
 
     if (method == "phone.ping")
         return {{"ok", true}, {"result", {{"pong", true}, {"name", hostname()}}}};
 
     if (method == "desktop.status") {
         a.ide().refresh();
+        json ides = json::array();
+        const auto& current = a.ide().endpoint();
+        for (const auto& ep : bridge::IdeBridge::enumerate()) {
+            ides.push_back({{"ide", ep.ide},
+                            {"version", ep.version},
+                            {"port", ep.port},
+                            {"workspace", ep.workspace},
+                            {"current", ep.pid == current.pid &&
+                                            ep.port == current.port}});
+        }
         return {{"ok", true},
                 {"result",
                  {{"name", hostname()},
@@ -38,11 +50,65 @@ json dispatch(const std::string& method, const json& params) {
                   {"ide_connected", a.ide().connected()},
                   {"ide", a.ide().connected() ? a.ide().endpoint().ide : ""},
                   {"workspace", a.ide().connected() ? a.ide().endpoint().workspace : ""},
+                  {"ides", ides},
                   {"tools", tools::schemas().size()}}}};
     }
 
     if (method == "tools.list")
         return {{"ok", true}, {"result", tools::schemas()}};
+
+    // Per-server connection state for the Settings tab / phone clients.
+    if (method == "mcp.status") {
+        json arr = json::array();
+        for (const auto& s : mcp::client().status())
+            arr.push_back({{"name", s.name},
+                           {"type", s.type},
+                           {"connected", s.connected},
+                           {"tools", s.tool_count},
+                           {"error", s.error},
+                           {"server", s.server_info}});
+        return {{"ok", true},
+                {"result", {{"connecting", mcp::client().connecting()},
+                            {"servers", arr}}}};
+    }
+
+    // "mcp.reconnect" — re-run connect_all after the user edits the list.
+    if (method == "mcp.reconnect") {
+        mcp::client().connect_all();
+        return {{"ok", true}, {"result", {{"reconnecting", true}}}};
+    }
+
+    // "chat.post" — surface an out-of-band message into the chatbox without
+    // running an agent turn. This is how MCP-bridged CLI agents (Gemini CLI,
+    // Claude Code, …) report results back to the user.
+    if (method == "chat.post") {
+        const std::string from = params.value("from", "terminal");
+        const std::string text = params.value("text", "");
+        if (text.empty()) return {{"ok", false}, {"error", "empty text"}};
+        a.agent().post_visible("tool",
+                               "[" + from + "] " + text);
+        return {{"ok", true}, {"result", {{"posted", true}}}};
+    }
+
+    // Terminal task queue — pending work pasted into a terminal window is
+    // claimable here by the agent running inside it (via the Argos MCP bridge).
+    if (method == "terminal.task.next") {
+        const DWORD pid = (DWORD)params.value("pid", 0);
+        auto t = tools::terminal_task_claim(pid);
+        if (t.is_null())
+            return {{"ok", true}, {"result", {{"task", nullptr}}}};
+        return {{"ok", true}, {"result", {{"task", t}}}};
+    }
+    if (method == "terminal.task.pending") {
+        return {{"ok", true},
+                {"result", {{"tasks", tools::terminal_task_pending()}}}};
+    }
+    if (method == "terminal.task.done") {
+        const std::string id = params.value("id", "");
+        const std::string result = params.value("result", "");
+        auto t = tools::terminal_task_complete(id, result);
+        return {{"ok", !t.is_null()}, {"result", t}};
+    }
 
     // "voice.listen" — toggle mic listening (same as double-clicking the
     // robot). Returns the resulting listening state.
@@ -90,6 +156,13 @@ json dispatch(const std::string& method, const json& params) {
         if (!r)
             return {{"ok", false}, {"error", a.ide().last_error()}};
         return {{"ok", true}, {"result", *r}};
+    }
+
+    // MCP tools (mcp_<server>_<tool>) route straight to the attached server.
+    if (method.rfind("mcp_", 0) == 0) {
+        auto [ok, out] = mcp::client().call(method, params);
+        return ok ? json{{"ok", true}, {"result", {{"output", out}}}}
+                  : json{{"ok", false}, {"error", out}};
     }
 
     // Any other method is treated as a tool call. Accept both naming styles:

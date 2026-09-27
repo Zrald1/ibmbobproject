@@ -1,0 +1,64 @@
+---
+# .clangd — IDE language-server configuration for Argos Desktop.
+#
+# The project builds with MSVC (VS generator) which does NOT emit
+# compile_commands.json natively.  compile_commands.json is generated
+# separately (see README) and sits in the project root.
+#
+# All paths below are the EXACT paths that MSVC uses during the real build
+# (extracted from build/argos.dir/Release/argos.tlog/CL.command.1.tlog).
+# The IDE warnings you see are NOT real build errors.
+
+CompileFlags:
+  # Point at compile_commands.json in the project root
+  CompilationDatabase: .
+
+  Add:
+    # ── Project source root ──────────────────────────────────────────────────
+    - -IC:/Users/Zrald/ibmbobproject/argos-desktop/src
+
+    # ── vcpkg-installed package headers (imgui, nlohmann_json, wil, webview2) ─
+    - -IC:/Users/Zrald/ibmbobproject/argos-desktop/build/vcpkg_installed/x64-windows/include
+
+    # ── MSVC STL / runtime headers ──────────────────────────────────────────
+    - -IC:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.50.35717/include
+
+    # ── Windows SDK headers ─────────────────────────────────────────────────
+    - -IC:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt
+    - -IC:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um
+    - -IC:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared
+    - -IC:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/winrt
+
+    # ── Preprocessor definitions (match CMakeLists.txt exactly) ─────────────
+    - -DUNICODE
+    - -D_UNICODE
+    - -DWIN32
+    - -D_WINDOWS
+    - -DWIN32_LEAN_AND_MEAN
+    - -DNOMINMAX
+    - -D_WIN32_WINNT=0x0A00
+    - -DWINVER=0x0A00
+    - -DARGOS_VERSION="0.1.0"
+    - -DNDEBUG
+
+    # ── Language / target ────────────────────────────────────────────────────
+    - --std=c++20
+    - --target=x86_64-pc-windows-msvc
+
+    # ── Silence clang-specific warnings irrelevant to MSVC code ─────────────
+    - -Wno-unknown-pragmas
+    - -Wno-unknown-attributes
+    - -Wno-ignored-attributes
+    - -Wno-unused-includes
+    - -Wno-microsoft-include
+
+  Remove:
+    # Strip clangd's default target flag — we set ours above
+    - --target=*
+
+Diagnostics:
+  # Suppress "included header X is not used directly" — these are valid in
+  # MSVC builds where headers are pulled in transitively via <windows.h>.
+  Suppress:
+    - unused-includes
+    - readability-*

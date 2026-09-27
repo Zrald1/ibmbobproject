@@ -11,12 +11,17 @@
 #include <cmath>
 #include <filesystem>
 #include <format>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
+#include "agent/agent.h"
+#include "core/app.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "platform/win_util.h"
+#include "tools/tools.h"
+#include "voice/voice.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -344,6 +349,8 @@ void RobotOverlay::on_web_message(const std::wstring& message) {
 
     if (fn == "onDiag") {
         last_heartbeat_ = ::GetTickCount64();
+        if (args.is_array() && !args.empty() && args[0].is_string())
+            log::info("robot " + args[0].get<std::string>());
         return;
     }
 
@@ -362,14 +369,24 @@ void RobotOverlay::apply_robot_bounds(int x, int y, int size) {
     // robot_zoom is an extra desktop magnification on top of that, because the
     // scene sizes itself for a phone screen.
     const double zoom = std::clamp(config().overlay.robot_zoom, 0.5, 6.0);
-    const int window_w = std::clamp(static_cast<int>(std::lround(size * 2.0 * zoom)), 160, 1800);
-    const int window_h = std::clamp(static_cast<int>(std::lround(size * 1.7 * zoom)), 140, 1600);
+    int window_w = std::clamp(static_cast<int>(std::lround(size * 2.0 * zoom)), 160, 1800);
+    int window_h = std::clamp(static_cast<int>(std::lround(size * 1.7 * zoom)), 140, 1600);
 
     // Centre the box on the robot's anchor, keeping it fully on screen.
-    const int left = std::clamp(screen_origin_x_ + x - window_w / 2, screen_origin_x_,
-                                screen_origin_x_ + screen_width_ - window_w);
-    const int top = std::clamp(screen_origin_y_ + y - window_h / 2, screen_origin_y_,
-                               screen_origin_y_ + screen_height_ - window_h);
+    int left = std::clamp(screen_origin_x_ + x - window_w / 2, screen_origin_x_,
+                          screen_origin_x_ + screen_width_ - window_w);
+    int top = std::clamp(screen_origin_y_ + y - window_h / 2, screen_origin_y_,
+                         screen_origin_y_ + screen_height_ - window_h);
+
+    // Position+size holds: parked (triple-click), panel open, summary open, or
+    // a task in flight — scene-requested moves AND resizes are ignored; only a
+    // user drag or a real resize may move the window.
+    if ((parked_ || panel_hold_ || roam_hold_ || work_hold_) && !dragging_) {
+        left = robot_x_;
+        top = robot_y_;
+        window_w = robot_w_;
+        window_h = robot_h_;
+    }
 
     // The scene animates its own scale continuously; resizing on every single
     // pixel would thrash SetWindowPos and flicker. Only resize on a real change.
@@ -416,7 +433,19 @@ void RobotOverlay::set_thinking(bool on) {
 }
 
 void RobotOverlay::set_talking(bool on) {
-    eval_js(std::format("if(window.ArgosJS){{ArgosJS.setTalking({});}}", on ? "true" : "false"));
+    // Freeze the Three.js scene for the whole utterance — stationary robot
+    // while speaking, animation resumes when TTS finishes.
+    // Position/size are already held by the work_hold bounds veto while
+    // speaking — the scene keeps its mouth/gesture animations running.
+    eval_js(std::format("if(window.ArgosJS){{ArgosJS.setTalking({});}}",
+                        on ? "true" : "false"));
+}
+
+void RobotOverlay::toggle_parked() {
+    parked_ = !parked_;
+    app().toast(parked_ ? "Argos parked — stays put (triple-click or /park to "
+                         "release)."
+                        : "Argos released — it can roam again.");
 }
 
 void RobotOverlay::set_listening(bool on) {
@@ -427,9 +456,9 @@ void RobotOverlay::set_recording(bool on) {
     set_state(on ? "recording" : "idle");
 }
 
-void RobotOverlay::on_speak_word(const std::string& word, int index) {
-    eval_js(std::format("if(window.ArgosJS&&ArgosJS.onSpeakWord){{ArgosJS.onSpeakWord({},{});}}",
-                        escape_js_string(word), index));
+void RobotOverlay::on_speak_word(int start, int end, const std::string& word) {
+    eval_js(std::format("if(window.ArgosJS&&ArgosJS.onSpeakWord){{ArgosJS.onSpeakWord({},{},{});}}",
+                        start, end, escape_js_string(word)));
 }
 
 void RobotOverlay::set_standby(bool on) {
@@ -491,7 +520,28 @@ void RobotOverlay::update_click_through() {
     }
 }
 
-void RobotOverlay::tick() { update_click_through(); }
+void RobotOverlay::tick() {
+    update_click_through();
+    // Roam gate: the scene may only relocate after a full minute without
+    // any activity (task running, voice, phone command, drag). An in-flight
+    // agent turn or voice pipeline counts as activity — a long Cerebras turn
+    // or a long spoken reply must not start the roam animation mid-task.
+    const double idle_s =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      last_activity_)
+            .count();
+    const bool working = app().agent().busy() || voice::listening() ||
+                         voice::transcribing() || voice::speaking();
+    work_hold_ = working;  // veto scene-driven position moves mid-task too
+    const bool idle =
+        !roam_hold_ && !panel_hold_ && !parked_ && !working &&
+        idle_s >= kRoamIdleSeconds;
+    if (idle != js_idle_) {
+        js_idle_ = idle;
+        eval_js(std::format("if(window.ArgosJS&&ArgosJS.setHostIdle){{ArgosJS.setHostIdle({});}}",
+                            idle ? "true" : "false"));
+    }
+}
 
 void RobotOverlay::destroy() {
     if (hwnd_) ::KillTimer(hwnd_, kTickTimer);
@@ -545,6 +595,24 @@ LRESULT RobotOverlay::handle_message(UINT msg, WPARAM wparam, LPARAM lparam) {
             return MA_NOACTIVATE;  // never take focus from the user's work
 
         case WM_LBUTTONDOWN: {
+            notify_activity();
+            const DWORD now = ::GetMessageTime();
+            click_streak_ =
+                (now - last_click_tick_ <= (DWORD)::GetDoubleClickTime())
+                    ? click_streak_ + 1
+                    : 1;
+            last_click_tick_ = now;
+            if (click_streak_ >= 3) {
+                click_streak_ = 0;
+                parked_ = !parked_;
+                app().toast(parked_ ? "Argos parked — triple-click to release."
+                                    : "Argos released — it can roam again.");
+                if (parked_) {
+                    // Stop any roam already in flight, don't wait for tick().
+                    js_idle_ = false;
+                    eval_js("if(window.ArgosJS&&ArgosJS.setHostIdle){ArgosJS.setHostIdle(false);}");
+                }
+            }
             dragging_ = true;
             POINT cursor{};
             ::GetCursorPos(&cursor);
@@ -580,9 +648,89 @@ LRESULT RobotOverlay::handle_message(UINT msg, WPARAM wparam, LPARAM lparam) {
             }
             return 0;
 
-        case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONUP: {
+            // Floating quick-actions: repo tools, the IDE fleet, repo hygiene
+            // and the park toggle — right on the robot, no panel needed.
+            POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            ::ClientToScreen(hwnd_, &pt);
+            HMENU menu = ::CreatePopupMenu();
+            ::AppendMenuW(menu, MF_STRING, 1001, L"Onboard this repo");
+            ::AppendMenuW(menu, MF_STRING, 1002, L"Onboarding summary");
+            ::AppendMenuW(menu, MF_STRING, 1003, L"Connected IDEs");
+            ::AppendMenuW(menu, MF_STRING, 1007,
+                          L"Send ping task to ALL IDEs");
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(menu, MF_STRING, 1004, L"Scan repo for API leaks");
+            ::AppendMenuW(menu, MF_STRING, 1005, L"Git: commit changes");
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(menu, MF_STRING | (parked_ ? MF_CHECKED : 0), 1006,
+                          L"Park robot here");
+            const UINT cmd =
+                ::TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x,
+                                   pt.y, hwnd_, nullptr);
+            ::DestroyMenu(menu);
+            if (cmd == 1006) {
+                parked_ = !parked_;
+                app().toast(parked_ ? "Argos parked — right-click to release."
+                                    : "Argos released — it can roam again.");
+                return 0;
+            }
+            if (cmd >= 1001 && cmd <= 1007) {
+                std::thread([cmd] {
+                    try {
+                    tools::Result r;
+                    if (cmd == 1001) {
+                        // Chatbox-only recon — nothing is pushed into the IDE.
+                        r = tools::execute("onboard_project",
+                                           {{"send_to_ide", false}});
+                    } else if (cmd == 1007) {
+                        r = tools::execute(
+                            "ide_dispatch",
+                            {{"tasks",
+                              nlohmann::json::array(
+                                  {{{"target", "all"},
+                                    {"text",
+                                     "Argos fleet check — reply with your IDE "
+                                     "name and one sentence describing what "
+                                     "you can do."}}})}});
+                    } else {
+                        const char* tool =
+                            cmd == 1002   ? "show_onboarding_summary"
+                            : cmd == 1003 ? "ide_status"
+                            : cmd == 1004 ? "secret_scan"
+                                          : "git_commit";
+                        r = tools::execute(tool, {});
+                    }
+                    const std::string body =
+                        std::string(cmd == 1001   ? "onboard_project"
+                                    : cmd == 1002 ? "show_onboarding_summary"
+                                    : cmd == 1003 ? "ide_status"
+                                    : cmd == 1004 ? "secret_scan"
+                                    : cmd == 1005 ? "git_commit"
+                                                  : "ide_dispatch") +
+                        " → " + (r.ok ? r.output : "error: " + r.output);
+                    app().agent().post_visible("tool", body);
+                    app().toast(body.substr(0, 120));
+                    } catch (const std::exception& e) {
+                        log::error(std::string("menu action threw: ") + e.what());
+                        app().toast(std::string("Action failed: ") + e.what());
+                    } catch (...) {
+                        log::error("menu action threw (unknown exception)");
+                    }
+                }).detach();
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONDBLCLK: {
+            notify_activity();
+            const DWORD now = ::GetMessageTime();
+            if (now - last_click_tick_ <= (DWORD)::GetDoubleClickTime())
+                ++click_streak_;
+            last_click_tick_ = now;
             if (on_tap_) on_tap_();
             return 0;
+        }
 
         case WM_DISPLAYCHANGE:
             screen_origin_x_ = ::GetSystemMetrics(SM_XVIRTUALSCREEN);

@@ -34,4 +34,15 @@ const nlohmann::json& schemas();
 // Execute one tool call. `args` is the model-supplied arguments object.
 Result execute(std::string_view tool, const nlohmann::json& args);
 
+// Terminal task queue (%APPDATA%\ArgosDesktop\terminal-tasks.json) — the
+// out-of-band channel between terminal dispatches and MCP-bridged CLI agents.
+nlohmann::json terminal_task_claim(unsigned long pid);
+nlohmann::json terminal_task_complete(const std::string& id,
+                                      const std::string& result);
+nlohmann::json terminal_task_pending();
+
+// Cheap fleet snapshot for the chat UI strip: registered IDEs + terminal
+// windows without probing endpoints (no network calls — safe per frame).
+nlohmann::json fleet_summary();
+
 }  // namespace argos::tools

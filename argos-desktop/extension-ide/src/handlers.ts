@@ -144,6 +144,15 @@ export function registerHandlers(server: BridgeServer): void {
         return { result: await vscode.commands.executeCommand(command, ...(args || [])) };
     });
 
+    // Command discovery — lets Argos find each IDE's REAL chat commands
+    // (VS Code forks like IBM Bob implement their own, not the Copilot API).
+    server.on('commands.list', async ({ filter }) => {
+        const all = await vscode.commands.getCommands(true);
+        const f = String(filter || '').toLowerCase();
+        const hits = all.filter((c) => !f || c.toLowerCase().includes(f));
+        return { commands: hits.slice(0, 500), total: all.length };
+    });
+
     server.on('ide.notify', ({ message, level }) => {
         const text = String(message ?? '');
         if (level === 'error') void vscode.window.showErrorMessage(text);

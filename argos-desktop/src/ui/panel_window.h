@@ -10,7 +10,15 @@
 
 #include "gfx/device.h"
 
+struct ImFont;
+
 namespace argos::ui {
+
+// Chat markdown fonts — null when unavailable; callers fall back to the
+// default font.
+ImFont* font_bold();
+ImFont* font_mono();
+ImFont* font_header();
 
 class PanelWindow {
 public:

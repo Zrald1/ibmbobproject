@@ -50,13 +50,24 @@ void apply_dark_titlebar(HWND hwnd) {
     ::DwmSetWindowAttribute(hwnd, 36 /*DWMWA_TEXT_COLOR*/, &text, sizeof(text));
 }
 
+namespace {
+
+ImFont* g_font_bold = nullptr;
+ImFont* g_font_mono = nullptr;
+ImFont* g_font_header = nullptr;
+
+}  // namespace
+
 void load_fonts() {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
+    g_font_bold = g_font_mono = g_font_header = nullptr;
 
     // Segoe UI keeps the panel consistent with the rest of Windows; if it is
     // somehow missing we silently keep the built-in font.
     const std::filesystem::path segoe = L"C:\\Windows\\Fonts\\segoeui.ttf";
+    const std::filesystem::path segoe_b = L"C:\\Windows\\Fonts\\segoeuib.ttf";
+    const std::filesystem::path consola = L"C:\\Windows\\Fonts\\consola.ttf";
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     cfg.OversampleV = 2;
@@ -69,6 +80,12 @@ void load_fonts() {
     } else {
         io.Fonts->AddFontDefault();
     }
+    if (std::filesystem::exists(segoe_b)) {
+        g_font_bold = io.Fonts->AddFontFromFileTTF(segoe_b.string().c_str(), 16.0f, &cfg);
+        g_font_header = io.Fonts->AddFontFromFileTTF(segoe_b.string().c_str(), 20.0f, &cfg);
+    }
+    if (std::filesystem::exists(consola))
+        g_font_mono = io.Fonts->AddFontFromFileTTF(consola.string().c_str(), 15.0f, &cfg);
 }
 
 void apply_theme() {
@@ -127,6 +144,10 @@ void apply_theme() {
 }
 
 }  // namespace
+
+ImFont* font_bold() { return g_font_bold; }
+ImFont* font_mono() { return g_font_mono; }
+ImFont* font_header() { return g_font_header; }
 
 WNDPROC PanelWindow::wnd_proc_stub() { return &PanelWindow::wnd_proc; }
 
