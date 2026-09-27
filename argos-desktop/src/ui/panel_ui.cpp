@@ -718,7 +718,7 @@ void draw_chat_tab(App& application) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.02f, 0.045f, 0.055f, 1.0f));
     if (ui::font_mono()) ImGui::PushFont(ui::font_mono());
     ImGui::BeginChild("chat_scroll", ImVec2(0, -126),
-                      ImGuiChildFlags_Border);
+                      ImGuiChildFlags_Borders);
     for (const auto& e : agent.history()) {
         if (e.role == "user") {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.95f, 0.55f, 1.0f));
