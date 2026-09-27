@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(argos_desktop
-    VERSION 0.1.0
+    VERSION 1.4.0
     DESCRIPTION "Argos Desktop — local AI companion for Windows"
     LANGUAGES CXX)
 

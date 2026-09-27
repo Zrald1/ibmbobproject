@@ -1,7 +1,7 @@
-name: Release APK
+name: Release
 
 # Triggered by pushing a version tag, e.g.
-#   git tag v1.0.0 && git push origin v1.0.0
+#   git tag v1.4.0 && git push origin v1.4.0
 # or manually via "Run workflow".
 on:
   push:
@@ -10,14 +10,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0)'
+        description: 'Release tag (e.g. v1.4.0)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.4.0'
 
 permissions:
   contents: write
 
-# ── Required repository secrets ──────────────────────────────────────────
+# ── Required repository secrets ──────────────────────────────────────────────
 # Settings → Secrets and variables → Actions → New repository secret
 #
 #   ANDROID_KEYSTORE_BASE64     base64 of the release keystore (.keystore file)
@@ -28,10 +28,12 @@ permissions:
 # Generate ANDROID_KEYSTORE_BASE64 (one line, no wrapping):
 #   pwsh scripts/setup-signing-secrets.ps1 -Keystore <path>
 #   ./scripts/setup-signing-secrets.sh <path>
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
+  # ── Android APK ─────────────────────────────────────────────────────────────
   build-android:
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -73,8 +75,6 @@ jobs:
       - name: Build release APK
         working-directory: android
         env:
-          # Absolute path — app/build.gradle resolves it with file(), which is
-          # relative to the app module dir, so a relative path here would miss.
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/signing/argos-release.keystore
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'argos-key' }}
@@ -86,7 +86,6 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           APKSIGNER="$ANDROID_HOME"/build-tools/36.0.0/apksigner
           "$APKSIGNER" verify --print-certs "$APK"
-          # Fail the build if it fell back to the debug key
           if "$APKSIGNER" verify --print-certs "$APK" | grep -q "CN=Android Debug"; then
             echo "::error::APK was signed with the DEBUG key — signing secrets are wrong."
             exit 1
@@ -95,7 +94,7 @@ jobs:
       - name: Rename APK
         run: cp android/app/build/outputs/apk/release/app-release.apk argos-android-release.apk
 
-      - name: Upload release APK artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: argos-android-release-apk
@@ -106,8 +105,68 @@ jobs:
         if: always()
         run: rm -rf "$RUNNER_TEMP/signing"
 
+  # ── Argos Desktop (Windows) ──────────────────────────────────────────────────
+  build-desktop:
+    name: Build Argos Desktop (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_INSTALLATION_ROOT"
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+        env:
+          VCPKG_INSTALLATION_ROOT: C:\vcpkg
+
+      - name: Configure (CMake + vcpkg)
+        shell: pwsh
+        working-directory: argos-desktop
+        run: |
+          cmake --preset default `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build Release
+        shell: pwsh
+        working-directory: argos-desktop
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage artefacts
+        shell: pwsh
+        working-directory: argos-desktop
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\Release\argos.exe        dist\
+          Copy-Item build\Release\WebView2Loader.dll dist\
+          Copy-Item build\Release\assets           dist\assets -Recurse
+          # Include the IDE bridge .vsix and MCP bridge script
+          Copy-Item extension-ide\argos-ide-bridge-0.1.0.vsix dist\
+          Copy-Item mcp-server\argos_bridge.py     dist\
+
+      - name: Zip desktop build
+        shell: pwsh
+        working-directory: argos-desktop
+        run: |
+          Compress-Archive -Path dist\* -DestinationPath ..\argos-desktop-windows-x64.zip
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: argos-desktop-windows-x64
+          path: argos-desktop-windows-x64.zip
+          retention-days: 90
+
+  # ── GitHub Release ────────────────────────────────────────────────────────────
   release:
-    needs: [build-android]
+    name: Create GitHub Release
+    needs: [build-android, build-desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,6 +186,12 @@ jobs:
           name: argos-android-release-apk
           path: artifacts
 
+      - name: Download desktop artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: argos-desktop-windows-x64
+          path: artifacts
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -135,11 +200,23 @@ jobs:
           body: |
             # Argos ${{ steps.tag.outputs.tag }}
 
-            ## Download
-            - **Android APK** — `argos-android-release.apk` (sideload on your phone)
+            ## Downloads
+
+            | Asset | Platform | Notes |
+            |---|---|---|
+            | `argos-android-release.apk` | Android 7.0+ | Sideload — enable "Install unknown apps" |
+            | `argos-desktop-windows-x64.zip` | Windows 10/11 x64 | Requires [WebView2 runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) |
+
+            ### Argos Desktop — quick start
+            1. Download and extract `argos-desktop-windows-x64.zip`
+            2. Run `argos.exe` — the robot overlay appears immediately
+            3. Install the IDE bridge: `code --install-extension argos-ide-bridge-0.1.0.vsix`
+            4. (Optional) Add the MCP bridge to your CLI agent — see `argos_bridge.py` header
 
             Release notes are generated automatically below.
-          files: artifacts/argos-android-release.apk
+          files: |
+            artifacts/argos-android-release.apk
+            artifacts/argos-desktop-windows-x64.zip
           draft: false
           prerelease: false
           generate_release_notes: true
