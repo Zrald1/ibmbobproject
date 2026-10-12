@@ -13,7 +13,7 @@ Two surfaces share the same robot scene and backend relay:
 
 ---
 
-## Table of Contents
+## Table of Contents :
 
 - [Features](#features)
 - [Argos Desktop (Windows)](#argos-desktop-windows)
@@ -35,7 +35,7 @@ Two surfaces share the same robot scene and backend relay:
 
 ---
 
-## Features
+## Features of the project:
 
 | Category | Capability |
 |---|---|
