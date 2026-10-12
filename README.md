@@ -4,7 +4,7 @@
 
 Argos is an AI-powered desktop and mobile companion rendered as an interactive Three.js robot. It runs a full **Cerebras agent loop**, drives VS Code-family IDEs through a bridge extension, reads your screen, speaks replies aloud, and dispatches tasks to terminal agents via MCP — all triggered by your explicit command.
 
-Two surfaces share the same robot scene and backend relay:
+Two surfaces share the same robot scene and backend relay as follows:
 
 | Surface | Folder | Stack |
 |---|---|---|
@@ -13,7 +13,7 @@ Two surfaces share the same robot scene and backend relay:
 
 ---
 
-## Table of Contents :
+## Table of Contents :-
 
 - [Features](#features)
 - [Argos Desktop (Windows)](#argos-desktop-windows)
